@@ -156,7 +156,20 @@ success "Lazygit $(lazygit --version | grep -oP 'version=\K[^,]+')"
 # ==============================================================================
 # 6. NEOVIM + LAZYVIM
 # ==============================================================================
-if ! command -v nvim &>/dev/null || ! nvim --version &>/dev/null; then
+NVIM_MIN_VERSION="0.9.0"
+NVIM_BIN="$(command -v nvim || true)"
+NVIM_VERSION=""
+
+if [[ -n "$NVIM_BIN" ]] && "$NVIM_BIN" --version &>/dev/null; then
+  mapfile -t NVIM_PATHS < <(which -a nvim 2>/dev/null | awk '!seen[$0]++')
+  if (( ${#NVIM_PATHS[@]} > 1 )); then
+    warn "Multiple nvim binaries detected: ${NVIM_PATHS[*]}"
+    info "Using first nvim in PATH: $NVIM_BIN"
+  fi
+  NVIM_VERSION=$("$NVIM_BIN" --version | head -1 | sed -nE 's/^NVIM v([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+fi
+
+if [[ -z "$NVIM_BIN" || -z "$NVIM_VERSION" || "$(printf '%s\n' "$NVIM_MIN_VERSION" "$NVIM_VERSION" | sort -V | head -1)" != "$NVIM_MIN_VERSION" ]]; then
   info "Installing Neovim..."
   curl -fsSLo nvim.tar.gz \
     "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${ARCH_ALT}.tar.gz"
@@ -165,13 +178,21 @@ if ! command -v nvim &>/dev/null || ! nvim --version &>/dev/null; then
   sudo rm -rf "/opt/${NVIM_DIR}" /opt/nvim
   sudo tar -C /opt -xzf nvim.tar.gz
   sudo ln -sf "/opt/${NVIM_DIR}/bin/nvim" /usr/local/bin/nvim
+  NVIM_BIN="/usr/local/bin/nvim"
 fi
-success "$(nvim --version | head -1)"
+success "$($NVIM_BIN --version | head -1) ($NVIM_BIN)"
 
-if [[ ! -d "$HOME/.config/nvim" ]]; then
+if [[ ! -f "$HOME/.config/nvim/lua/config/lazy.lua" ]]; then
+  if [[ -d "$HOME/.config/nvim" ]]; then
+    NVIM_BACKUP="$HOME/.config/nvim.backup_$(date +%Y%m%d_%H%M%S)"
+    mv "$HOME/.config/nvim" "$NVIM_BACKUP"
+    warn "Existing nvim config backed up -> $NVIM_BACKUP"
+  fi
   info "Cloning LazyVim starter..."
   git clone --depth=1 https://github.com/LazyVim/starter ~/.config/nvim
   rm -rf ~/.config/nvim/.git
+else
+  success "LazyVim config already present — skipping clone."
 fi
 
 # ==============================================================================
@@ -235,8 +256,10 @@ local wezterm = require("wezterm")
 local act = wezterm.action
 local config = wezterm.config_builder()
 
+-- ==========================================
+-- GENERAL SETTINGS
+-- ==========================================
 config.color_scheme = "Catppuccin Macchiato"
--- Use a broadly supported TERM so TUI apps also work in ssh/docker/tmux hops.
 config.term = "xterm-256color"
 config.default_prog = { "/usr/bin/env", "zsh", "-l" }
 config.font = wezterm.font("JetBrainsMono Nerd Font", { weight = "Medium" })
@@ -247,29 +270,99 @@ config.window_decorations = "NONE"
 config.enable_scroll_bar = false
 config.window_padding = { left = "2cell", right = "2cell", top = "1cell", bottom = "0cell" }
 
+-- Maximize on startup
 wezterm.on("gui-startup", function(spawn_window)
   local _, _, window = wezterm.mux.spawn_window(spawn_window or {})
   window:gui_window():maximize()
 end)
 
+-- Tab bar appearance
 config.use_fancy_tab_bar = false
 config.tab_bar_at_bottom = true
 config.hide_tab_bar_if_only_one_tab = true
+
+-- ==========================================
+-- LEADER KEY
+-- ==========================================
 config.leader = { key = "a", mods = "CTRL", timeout_milliseconds = 1000 }
 
 config.keys = {
-  { key = "Enter", mods = "ALT",    action = act.ToggleFullScreen },
-  { key = "s",     mods = "LEADER", action = act.SplitVertical({ domain = "CurrentPaneDomain" }) },
-  { key = "v",     mods = "LEADER", action = act.SplitHorizontal({ domain = "CurrentPaneDomain" }) },
-  { key = "z",     mods = "LEADER", action = act.TogglePaneZoomState },
-  { key = "c",     mods = "LEADER", action = act.SpawnTab("CurrentPaneDomain") },
-  { key = "x",     mods = "LEADER", action = act.CloseCurrentPane({ confirm = true }) },
-  { key = "h",     mods = "LEADER", action = act.ActivatePaneDirection("Left") },
-  { key = "j",     mods = "LEADER", action = act.ActivatePaneDirection("Down") },
-  { key = "k",     mods = "LEADER", action = act.ActivatePaneDirection("Up") },
-  { key = "l",     mods = "LEADER", action = act.ActivatePaneDirection("Right") },
+  -- Send "CTRL-A" to the terminal when pressing LEADER twice
+  { key = "a",     mods = "LEADER|CTRL",  action = act.SendString("\x01") },
+
+  -- ==========================================
+  -- PANE MANAGEMENT
+  -- ==========================================
+  -- Splitting panes
+  { key = "s",     mods = "LEADER",       action = act.SplitVertical({ domain = "CurrentPaneDomain" }) },
+  { key = "-",     mods = "LEADER",       action = act.SplitVertical({ domain = "CurrentPaneDomain" }) },
+  { key = "v",     mods = "LEADER",       action = act.SplitHorizontal({ domain = "CurrentPaneDomain" }) },
+  { key = "\\",    mods = "LEADER",       action = act.SplitHorizontal({ domain = "CurrentPaneDomain" }) },
+  
+  -- Pane navigation (Vim-style)
+  { key = "h",     mods = "LEADER",       action = act.ActivatePaneDirection("Left") },
+  { key = "j",     mods = "LEADER",       action = act.ActivatePaneDirection("Down") },
+  { key = "k",     mods = "LEADER",       action = act.ActivatePaneDirection("Up") },
+  { key = "l",     mods = "LEADER",       action = act.ActivatePaneDirection("Right") },
+  
+  -- Resizing panes
+  { key = "H",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Left", 5 }) },
+  { key = "J",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Down", 5 }) },
+  { key = "K",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Up", 5 }) },
+  { key = "L",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Right", 5 }) },
+  
+  -- Zoom and closing (NO CONFIRMATION)
+  { key = "z",     mods = "LEADER",       action = act.TogglePaneZoomState },
+  { key = "o",     mods = "LEADER",       action = act.TogglePaneZoomState },
+  { key = "x",     mods = "LEADER",       action = act.CloseCurrentPane({ confirm = false }) },
+  { key = "d",     mods = "LEADER",       action = act.CloseCurrentPane({ confirm = false }) },
+
+  -- ==========================================
+  -- TAB MANAGEMENT
+  -- ==========================================
+  -- Creating and closing tabs
+  { key = "c",     mods = "LEADER",       action = act.SpawnTab("CurrentPaneDomain") },
+  { key = "&",     mods = "LEADER|SHIFT", action = act.CloseCurrentTab({ confirm = false }) },
+  
+  -- Fast tab navigation (1-9)
+  { key = "1",     mods = "LEADER",       action = act.ActivateTab(0) },
+  { key = "2",     mods = "LEADER",       action = act.ActivateTab(1) },
+  { key = "3",     mods = "LEADER",       action = act.ActivateTab(2) },
+  { key = "4",     mods = "LEADER",       action = act.ActivateTab(3) },
+  { key = "5",     mods = "LEADER",       action = act.ActivateTab(4) },
+  { key = "6",     mods = "LEADER",       action = act.ActivateTab(5) },
+  { key = "7",     mods = "LEADER",       action = act.ActivateTab(6) },
+  { key = "8",     mods = "LEADER",       action = act.ActivateTab(7) },
+  { key = "9",     mods = "LEADER",       action = act.ActivateTab(8) },
+  
+  -- Advanced tab features
+  { key = "Tab",   mods = "LEADER",       action = act.ActivateLastTab },
+  { key = "w",     mods = "LEADER",       action = act.ShowTabNavigator },
+  { key = "<",     mods = "LEADER|SHIFT", action = act.MoveTabRelative(-1) },
+  { key = ">",     mods = "LEADER|SHIFT", action = act.MoveTabRelative(1) },
+  {
+    key = ",",
+    mods = "LEADER",
+    action = act.PromptInputLine({
+      description = "Rename tab:",
+      action = wezterm.action_callback(function(window, pane, line)
+        if line then window:active_tab():set_title(line) end
+      end),
+    }),
+  },
+
+  -- ==========================================
+  -- SEARCH AND UTILITIES
+  -- ==========================================
+  { key = "Enter", mods = "ALT",          action = act.ToggleFullScreen },
+  { key = "/",     mods = "LEADER",       action = act.Search("CurrentSelectionOrEmptyString") },
+  { key = "[",     mods = "LEADER",       action = act.ActivateCopyMode },
+  { key = "r",     mods = "LEADER",       action = act.ReloadConfiguration },
 }
 
+-- ==========================================
+-- PLUGIN: TABLINE
+-- ==========================================
 local ok, tabline = pcall(wezterm.plugin.require, "https://github.com/michaelbrusegard/tabline.wez")
 if ok then
   tabline.setup({
@@ -431,6 +524,11 @@ fi
 info "Writing ~/.zshrc..."
 backup_if_exists ~/.zshrc
 cat > ~/.zshrc << 'ZSHRC'
+# Reset XDG_CONFIG_HOME to default if it points to Flatpak sandbox
+if [[ "$XDG_CONFIG_HOME" == *".var/app"* ]]; then
+  export XDG_CONFIG_HOME="$HOME/.config"
+fi
+
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
@@ -581,13 +679,14 @@ zle -N fancy-ctrl-z
 bindkey '^Z' fancy-ctrl-z
 
 # Atuin — replaces CTRL+R with smart history search
-export ATUIN_NOBIND=true
-eval "$(atuin init zsh --disable-up-arrow --disable-ctrl-r)"
+if (( $+commands[atuin] )); then
+  eval "$(atuin init zsh --disable-up-arrow)"
+  bindkey '^R' atuin-search
+fi
 
 # Keep arrow-down behavior stable even if plugins redefine widgets.
 bindkey '^[[B' down-line-or-history
 bindkey '^N' down-line-or-history
-bindkey '^R' history-incremental-search-backward
 
 eval "$(zoxide init zsh)"
 
