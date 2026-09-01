@@ -4,6 +4,11 @@
 # Requires: Ubuntu 22.04+ | Run as normal user with sudo access
 # ==============================================================================
 
+# Must be executed (./Setup.sh), not sourced - sourcing leaks pyenv's PYENV_DIR
+# (pointing at the temp workdir) into the interactive shell, breaking it once
+# the workdir is removed at the end of the script.
+(return 0 2>/dev/null) && { echo "Ne source-aj te skripte, pozeni jo z: ./Setup.sh" >&2; return 1; }
+
 set -Eeuo pipefail
 
 # Unset any inherited CA overrides that might point to non-Ubuntu paths
@@ -52,6 +57,15 @@ extract_semver() {
   sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1
 }
 
+backup_if_exists() {
+  local file="$1"
+  if [[ -f "$file" ]]; then
+    local backup="${file}.backup_$(date +%Y%m%d_%H%M%S)"
+    cp "$file" "$backup"
+    warn "Existing $(basename "$file") backed up → $backup"
+  fi
+}
+
 # ==============================================================================
 # 1. SYSTEM PACKAGES
 # ==============================================================================
@@ -60,7 +74,7 @@ sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
   curl wget git build-essential cmake ninja-build \
   python3-pip pipx \
   ripgrep fd-find bat \
-  zoxide fzf btop fastfetch zsh libusb-1.0-0-dev tealdeer fontconfig \
+  zoxide fzf btop fastfetch zsh libusb-1.0-0-dev tealdeer fontconfig lsof \
   libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
   libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
   unzip ca-certificates gnupg jq
@@ -85,10 +99,7 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # Pull ESP-IDF Images
-info "Pulling ESP-IDF Docker images..."
-sudo docker pull espressif/idf:latest
-sudo docker pull espressif/idf:release-v5.0
-success "Docker images pulled."
+# Docker images for ESP-IDF will be downloaded when first needed
 
 # ==============================================================================
 # 2. NODE.JS LTS (NodeSource — apt ships outdated versions)
@@ -126,6 +137,9 @@ export PYENV_ROOT="$HOME/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
 eval "$(pyenv init --path)"
 eval "$(pyenv init -)"
+# pyenv exports PYENV_DIR=$(pwd) (currently the temp workdir); drop it so it
+# can't outlive this script and break later pyenv invocations once WORK_DIR is gone.
+unset PYENV_DIR
 
 PYTHON_VERSION=$(pyenv install --list | grep -E '^\s+3\.12\.[0-9]+$' | tail -1 | tr -d ' ')
 info "Latest Python 3.12 patch: $PYTHON_VERSION"
@@ -152,6 +166,30 @@ if ! command -v lazygit &>/dev/null || ! lazygit --version &>/dev/null; then
   sudo install lazygit /usr/local/bin
 fi
 success "Lazygit $(lazygit --version | grep -oP 'version=\K[^,]+')"
+
+info "Writing lazygit config..."
+LG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit"
+mkdir -p "$LG_DIR"
+backup_if_exists "$LG_DIR/config.yml"
+cat > "$LG_DIR/config.yml" << 'YML'
+gui:
+  showIcons: true
+  nerdFontsVersion: "3"
+  showCommandLog: false
+  sidePanelWidth: 0.3
+  mainPanelSplitMode: flexible
+git:
+  paging:
+    colorArg: always
+    pager: delta --dark --paging=never
+  autoFetch: true
+os:
+  editPreset: nvim
+keybinding:
+  universal:
+    quit: q
+YML
+success "lazygit config written."
 
 # ==============================================================================
 # 6. NEOVIM + LAZYVIM
@@ -241,15 +279,6 @@ if ! command -v wezterm &>/dev/null; then
   sudo apt-get update -qq && sudo apt-get install -y wezterm
 fi
 
-backup_if_exists() {
-  local file="$1"
-  if [[ -f "$file" ]]; then
-    local backup="${file}.backup_$(date +%Y%m%d_%H%M%S)"
-    cp "$file" "$backup"
-    warn "Existing $(basename "$file") backed up → $backup"
-  fi
-}
-
 backup_if_exists ~/.wezterm.lua
 cat > ~/.wezterm.lua << 'EOF'
 local wezterm = require("wezterm")
@@ -269,6 +298,9 @@ config.default_cursor_style = "BlinkingBlock"
 config.window_decorations = "NONE"
 config.enable_scroll_bar = false
 config.window_padding = { left = "2cell", right = "2cell", top = "1cell", bottom = "0cell" }
+config.scrollback_lines = 20000
+config.audible_bell = "Disabled"
+config.adjust_window_size_when_changing_font_size = false
 
 -- Maximize on startup
 wezterm.on("gui-startup", function(spawn_window)
@@ -357,6 +389,7 @@ config.keys = {
   { key = "Enter", mods = "ALT",          action = act.ToggleFullScreen },
   { key = "/",     mods = "LEADER",       action = act.Search("CurrentSelectionOrEmptyString") },
   { key = "[",     mods = "LEADER",       action = act.ActivateCopyMode },
+  { key = "e",     mods = "LEADER",       action = act.QuickSelect },
   { key = "r",     mods = "LEADER",       action = act.ReloadConfiguration },
 }
 
@@ -452,6 +485,10 @@ git config --global delta.side-by-side true
 git config --global delta.line-numbers true
 git config --global merge.conflictstyle diff3
 git config --global diff.colorMoved default
+git config --global pull.rebase true
+git config --global init.defaultBranch main
+git config --global push.autoSetupRemote true
+git config --global rebase.autoStash true
 success "delta $(delta --version)"
 
 # ==============================================================================
@@ -541,9 +578,29 @@ export PYENV_ROOT="$HOME/.pyenv"
 [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
 eval "$(pyenv init --path)"
 eval "$(pyenv init -)"
+unset PYENV_DIR
 
 # Go
 export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+
+# History
+HISTFILE=~/.zsh_history
+HISTSIZE=100000
+SAVEHIST=100000
+setopt SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS
+setopt EXTENDED_GLOB AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS INTERACTIVE_COMMENTS NO_BEEP
+
+# Completion
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+zstyle ':completion:*:descriptions' format '%F{yellow}-- %d --%f'
+
+# FZF
+export FZF_DEFAULT_COMMAND='fd --hidden --strip-cwd-prefix --exclude .git'
+export FZF_DEFAULT_OPTS="--height 45% --layout=reverse --border --preview-window=right:55%"
+export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null || eza -T --color=always {}'"
+source <(fzf --zsh) 2>/dev/null
+export EDITOR=nvim VISUAL=nvim
 
 # Oh-My-Zsh
 export ZSH="$HOME/.oh-my-zsh"
@@ -558,6 +615,19 @@ fi
 # Safety aliases for Ubuntu binary name differences
 (( $+commands[fdfind] )) && alias fd='fdfind'
 (( $+commands[batcat] )) && alias bat='batcat'
+
+# Extra Emacs-style keybindings (mark/kill/yank region)
+bindkey -e
+bindkey '^[b'  backward-word
+bindkey '^[f'  forward-word
+bindkey '^U'   backward-kill-line
+bindkey '^@'   set-mark-command           # Ctrl+Space = oznacevanje
+bindkey '^X^K' kill-region
+bindkey '^[w'  copy-region-as-kill
+bindkey '^Y'   yank
+autoload -Uz edit-command-line && zle -N edit-command-line
+bindkey '^X^E' edit-command-line
+zle_highlight=('region:bg=#45475a')
 
 # File listing
 alias ls='eza --icons'
@@ -604,32 +674,59 @@ alias path='echo $PATH | tr ":" "\n"'
 # Clear + fastfetch
 alias cl='clear && fastfetch'
 
+# Quick reload / system info
+alias reload='exec zsh'
+alias myip='curl -s ifconfig.me; echo'
+alias update='sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y'
+
 # Docker
 alias dps='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
 alias dex='docker exec -it'
 alias dlogs='docker logs -f'
 
-# ESP-IDF via Docker aliases
-# idf -> Uses latest version
-new_idf.py() {
+# ESP-IDF via Docker
+idf55() {
   docker run --rm \
     -v "$(pwd):/project" \
     -w /project \
     --privileged \
     --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-    -it espressif/idf:latest \
+    -it espressif/idf:v5.5.5 \
     idf.py "$@"
 }
 
-# idf50 -> Uses release-v5.0
-idf.py() {
+idf50() {
   docker run --rm \
     -v "$(pwd):/project" \
     -w /project \
     --privileged \
     --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-    -it espressif/idf:release-v5.0 \
+    -it espressif/idf:v5.0.8 \
     idf.py "$@"
+}
+
+sbom50() {
+  docker run --rm \
+    -v "$(pwd):/project" \
+    -w /project \
+    -it espressif/idf:v5.0.8 \
+    bash -lc '
+      pip install --upgrade pip --quiet
+      python -m pip install --quiet esp-idf-sbom==1.3.0 &&
+      python -m esp_idf_sbom "$@"
+    ' -- "$@"
+}
+
+sbom55() {
+  docker run --rm \
+    -v "$(pwd):/project" \
+    -w /project \
+    -it espressif/idf:v5.5.5 \
+    bash -lc '
+      pip install --upgrade pip --quiet
+      python -m pip install --quiet esp-idf-sbom==1.3.0 &&
+      python -m esp_idf_sbom "$@"
+    ' -- "$@"
 }
 
 # Universal archive extractor
@@ -647,6 +744,46 @@ extract() {
 
 # mkdir + cd in one step
 mkcd() { mkdir -p "$1" && cd "$1"; }
+
+# fzf: open file in nvim
+fv() {
+  local f
+  f=$(fd --type f --hidden --exclude .git | fzf --preview 'bat -n --color=always {}') && [[ -n "$f" ]] && nvim "$f"
+}
+
+# fzf: switch git branch
+fbr() {
+  local b
+  b=$(git branch --all | grep -v HEAD | sed 's/^[* ] //;s#remotes/origin/##' | sort -u \
+      | fzf --preview 'git log --oneline --color=always -20 {}') && [[ -n "$b" ]] && git checkout "$b"
+}
+
+# fzf: kill process
+fkill() {
+  local pid
+  pid=$(ps -ef | sed 1d | fzf -m --header='TAB za vec' | awk '{print $2}') && [[ -n "$pid" ]] && kill -${1:-9} $pid
+}
+
+# ripgrep + fzf -> nvim on matching line
+rgv() {
+  local out file line
+  out=$(rg --line-number --no-heading --color=always "${1:-}" \
+        | fzf --ansi --delimiter=: --preview 'bat --color=always -H {2} {1}') || return
+  file=${out%%:*}; line=$(echo "$out" | cut -d: -f2)
+  [[ -n "$file" ]] && nvim "+$line" "$file"
+}
+
+# git add all + commit
+gac() { git add -A && git commit -m "$*"; }
+
+# who is listening on a port
+porty() { lsof -nP -iTCP:"$1" -sTCP:LISTEN; }
+
+# quick ad-hoc backup of a file
+bak() { cp -a "$1" "$1.bak.$(date +%Y%m%d-%H%M%S)"; }
+
+# cheat sheet
+cheat() { curl -s "cheat.sh/$1"; }
 
 # Interactive history search (named alias — CTRL+R is already bound by fzf)
 fh() { eval "$(history | fzf --tac | sed 's/ *[0-9]* *//')" }
