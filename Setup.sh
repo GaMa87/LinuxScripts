@@ -15,7 +15,10 @@
 # Must be executed (./Setup.sh), not sourced - sourcing leaks pyenv's PYENV_DIR
 # (pointing at the temp workdir) into the interactive shell, breaking it once
 # the workdir is removed at the end of the script.
-(return 0 2>/dev/null) && { echo "Ne source-aj te skripte, pozeni jo z: ./Setup.sh" >&2; return 1; }
+(return 0 2>/dev/null) && {
+  echo "Ne source-aj te skripte, pozeni jo z: ./Setup.sh" >&2
+  return 1
+}
 
 set -Eeuo pipefail
 
@@ -23,11 +26,18 @@ set -Eeuo pipefail
 # (e.g. CURL_CA_BUNDLE=/etc/pki/... from RHEL/Fedora environments)
 unset CURL_CA_BUNDLE SSL_CERT_FILE
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()    { echo -e "${CYAN}[HEX-LAB]${NC} $*"; }
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+info() { echo -e "${CYAN}[HEX-LAB]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-die()     { echo -e "${RED}[FAIL]${NC} $*" >&2; exit 1; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+die() {
+  echo -e "${RED}[FAIL]${NC} $*" >&2
+  exit 1
+}
 
 # Deferred messages printed in the final banner (re-login hints etc.)
 declare -a POST_NOTES=()
@@ -39,9 +49,12 @@ LOG_FILE="$LOG_DIR/setup_$(date +%Y%m%d_%H%M%S).log"
 
 # Keep a full transcript so failures are debuggable even if the terminal closes.
 if [[ -t 1 ]]; then
-  exec > >(trap '' ERR; tee -a "$LOG_FILE") 2>&1
+  exec > >(
+    trap '' ERR
+    tee -a "$LOG_FILE"
+  ) 2>&1
 else
-  exec >> "$LOG_FILE" 2>&1
+  exec >>"$LOG_FILE" 2>&1
 fi
 
 # --- Interactive I/O helpers (stdout is a tee pipe, so prompt via /dev/tty) ---
@@ -50,14 +63,14 @@ HAVE_TTY=0
 
 ask() { # ask <prompt> <varname>  -> returns 1 if no tty
   local _p="$1" _v="$2" _a=""
-  (( HAVE_TTY )) || return 1
+  ((HAVE_TTY)) || return 1
   printf '%b' "${CYAN}${_p}${NC}" >&3
   IFS= read -r _a <&3 || return 1
   printf -v "$_v" '%s' "$_a"
 }
 
 pause_tty() {
-  (( HAVE_TTY )) || return 0
+  ((HAVE_TTY)) || return 0
   printf '%b' "Press Enter to close..." >&3
   read -r _ <&3 || true
 }
@@ -68,10 +81,10 @@ pause_tty() {
 if [[ -r /etc/os-release ]]; then
   # shellcheck disable=SC1091
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *debian* ]] \
-    || warn "Netestiran distro: ${ID:-unknown} — nadaljujem na lastno odgovornost."
+  [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *debian* ]] ||
+    warn "Netestiran distro: ${ID:-unknown} — nadaljujem na lastno odgovornost."
   if [[ "${ID:-}" == "ubuntu" ]]; then
-    (( ${VERSION_ID%%.*} >= 22 )) || die "Potreben Ubuntu 22.04+ (zaznan ${VERSION_ID})."
+    ((${VERSION_ID%%.*} >= 22)) || die "Potreben Ubuntu 22.04+ (zaznan ${VERSION_ID})."
   fi
 fi
 
@@ -79,9 +92,15 @@ fi
 
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64)  ARCH_ALT="x86_64"; ARCH_GO="amd64" ;;
-  aarch64) ARCH_ALT="arm64";  ARCH_GO="arm64" ;;
-  *)       die "Unsupported architecture: $ARCH" ;;
+x86_64)
+  ARCH_ALT="x86_64"
+  ARCH_GO="amd64"
+  ;;
+aarch64)
+  ARCH_ALT="arm64"
+  ARCH_GO="arm64"
+  ;;
+*) die "Unsupported architecture: $ARCH" ;;
 esac
 
 info "Architecture: $ARCH"
@@ -89,12 +108,16 @@ info "Log file: $LOG_FILE"
 
 # --- sudo keepalive: pyenv compile can take 15+ min and the timestamp expires --
 info "Preverjam sudo dostop..."
-if (( HAVE_TTY )); then
-  sudo -v < /dev/tty || die "Potrebujem sudo."
+if ((HAVE_TTY)); then
+  sudo -v </dev/tty || die "Potrebujem sudo."
 else
   sudo -n true 2>/dev/null || die "Potrebujem sudo (neinteraktivni zagon: najprej 'sudo -v')."
 fi
-( while true; do sudo -n true 2>/dev/null; sleep 50; kill -0 "$$" 2>/dev/null || exit; done & ) 2>/dev/null
+(while true; do
+  sudo -n true 2>/dev/null
+  sleep 50
+  kill -0 "$$" 2>/dev/null || exit
+done &) 2>/dev/null
 SUDO_KEEPALIVE_PID=$!
 
 WORK_DIR=$(mktemp -d)
@@ -103,7 +126,7 @@ cleanup() {
   local rc=$?
   [[ -d "$ORIG_DIR" ]] && cd "$ORIG_DIR" || true
   rm -rf "$WORK_DIR"
-  (( rc != 0 )) && warn "Script failed/interrupted — temp files cleaned."
+  ((rc != 0)) && warn "Script failed/interrupted — temp files cleaned."
   return 0
 }
 trap cleanup EXIT
@@ -139,24 +162,24 @@ gh_latest_tag() {
   local repo="$1" tag="" hdr=()
   [[ -n "${GITHUB_TOKEN:-}" ]] && hdr=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
   tag=$(curl -fsSL --retry 3 --retry-delay 2 "${hdr[@]}" \
-        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
-        | jq -r '.tag_name // empty' 2>/dev/null || true)
+    "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null |
+    jq -r '.tag_name // empty' 2>/dev/null || true)
   if [[ -z "$tag" ]]; then
     # Fallback: follow the /releases/latest redirect and read the tag from Location.
     tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-          "https://github.com/${repo}/releases/latest" 2>/dev/null \
-          | sed -nE 's#.*/tag/(.+)$#\1#p' || true)
+      "https://github.com/${repo}/releases/latest" 2>/dev/null |
+      sed -nE 's#.*/tag/(.+)$#\1#p' || true)
   fi
-  [[ -z "$tag" || "$tag" == "null" ]] \
-    && die "GitHub ni vrnil tag-a za ${repo} (rate limit? nastavi GITHUB_TOKEN)"
+  [[ -z "$tag" || "$tag" == "null" ]] &&
+    die "GitHub ni vrnil tag-a za ${repo} (rate limit? nastavi GITHUB_TOKEN)"
   echo "$tag"
 }
 
 # fetch <url> <dest> — download + verify it is not an HTML error page
 fetch() {
   local url="$1" dest="$2"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$dest" "$url" \
-    || die "Prenos ni uspel: $url"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$dest" "$url" ||
+    die "Prenos ni uspel: $url"
   [[ -s "$dest" ]] || die "Prenesena datoteka je prazna: $url"
   if file -b "$dest" | grep -qiE 'html|ascii text|json'; then
     die "Prenos ni binarni arhiv (verjetno error page): $url"
@@ -178,22 +201,28 @@ declare -a SKIP_MODULES=()
 
 for arg in "$@"; do
   case "$arg" in
-    --list)
-      printf 'Moduli: %s\n' "${ALL_MODULES[*]}"; exit 0 ;;
-    --only=*)
-      IFS=',' read -r -a RUN_MODULES <<< "${arg#--only=}" ;;
-    --skip=*)
-      IFS=',' read -r -a SKIP_MODULES <<< "${arg#--skip=}" ;;
-    -h|--help)
-      sed -n '2,20p' "$0"; exit 0 ;;
-    *) die "Neznan argument: $arg (uporabi --help)" ;;
+  --list)
+    printf 'Moduli: %s\n' "${ALL_MODULES[*]}"
+    exit 0
+    ;;
+  --only=*)
+    IFS=',' read -r -a RUN_MODULES <<<"${arg#--only=}"
+    ;;
+  --skip=*)
+    IFS=',' read -r -a SKIP_MODULES <<<"${arg#--skip=}"
+    ;;
+  -h | --help)
+    sed -n '2,20p' "$0"
+    exit 0
+    ;;
+  *) die "Neznan argument: $arg (uporabi --help)" ;;
   esac
 done
 
 should_run() {
   local m="$1" x
   for x in "${SKIP_MODULES[@]:-}"; do [[ "$x" == "$m" ]] && return 1; done
-  for x in "${RUN_MODULES[@]}";     do [[ "$x" == "$m" ]] && return 0; done
+  for x in "${RUN_MODULES[@]}"; do [[ "$x" == "$m" ]] && return 0; done
   return 1
 }
 
@@ -210,10 +239,10 @@ mod_base() {
     zoxide fzf btop fastfetch zsh libusb-1.0-0-dev tealdeer fontconfig lsof \
     libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
     libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
-    unzip zstd p7zip-full ca-certificates gnupg jq
+    unzip zstd p7zip-full ca-certificates gnupg jq xclip usb-creator-gtk
 
   # On Ubuntu/Debian, fd-find installs as fdfind and bat as batcat
-  [[ ! -e /usr/local/bin/fd  ]] && have fdfind && sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+  [[ ! -e /usr/local/bin/fd ]] && have fdfind && sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
   [[ ! -e /usr/local/bin/bat ]] && have batcat && sudo ln -sf "$(command -v batcat)" /usr/local/bin/bat
   success "System packages done."
 }
@@ -225,11 +254,11 @@ mod_docker() {
   if ! have docker; then
     info "Installing Docker Engine..."
     sudo install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-      | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg |
+      sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
     sudo chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-      | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" |
+      sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
     sudo apt-get update -qq
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io \
       docker-buildx-plugin docker-compose-plugin
@@ -271,7 +300,7 @@ mod_golang() {
     fetch "https://go.dev/dl/go${gover}.linux-${ARCH_GO}.tar.gz" go.tar.gz
     sudo rm -rf /usr/local/go
     sudo tar -C /usr/local -xzf go.tar.gz
-    sudo ln -sf /usr/local/go/bin/go    /usr/local/bin/go
+    sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
     sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
   fi
   success "Go $(go version)"
@@ -306,8 +335,8 @@ mod_pyenv() {
       info "Compiling Python $pyver with PGO+LTO (10-20 min)... za hiter build: HEXLAB_PY_FAST=1"
     fi
     PYTHON_CONFIGURE_OPTS="$opts" \
-    PYTHON_MAKE_OPTS="-j$(nproc)" \
-    MAKE_OPTS="-j$(nproc)" \
+      PYTHON_MAKE_OPTS="-j$(nproc)" \
+      MAKE_OPTS="-j$(nproc)" \
       pyenv install "$pyver"
   fi
   pyenv global "$pyver"
@@ -323,9 +352,12 @@ mod_uv() {
     curl -LsSf https://astral.sh/uv/install.sh | sh
   fi
   export PATH="$HOME/.local/bin:$PATH"
-  have uv || { warn "uv ni na PATH — preskakujem tool install."; return 0; }
-  uv tool install --quiet ruff        2>/dev/null || warn "uv tool install ruff failed"
-  uv tool install --quiet esptool     2>/dev/null || warn "uv tool install esptool failed"
+  have uv || {
+    warn "uv ni na PATH — preskakujem tool install."
+    return 0
+  }
+  uv tool install --quiet ruff 2>/dev/null || warn "uv tool install ruff failed"
+  uv tool install --quiet esptool 2>/dev/null || warn "uv tool install esptool failed"
   success "uv $(uv --version | extract_semver)"
 }
 
@@ -336,7 +368,8 @@ mod_lazygit() {
   if ! have lazygit || ! lazygit --version &>/dev/null; then
     info "Installing Lazygit..."
     local tag ver
-    tag=$(gh_latest_tag jesseduffield/lazygit); ver="${tag#v}"
+    tag=$(gh_latest_tag jesseduffield/lazygit)
+    ver="${tag#v}"
     fetch "https://github.com/jesseduffield/lazygit/releases/download/${tag}/lazygit_${ver}_Linux_${ARCH_ALT}.tar.gz" lazygit.tar.gz
     tar xf lazygit.tar.gz lazygit
     sudo install lazygit /usr/local/bin
@@ -347,7 +380,7 @@ mod_lazygit() {
   local lg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/lazygit"
   mkdir -p "$lg_dir"
   backup_if_exists "$lg_dir/config.yml"
-  cat > "$lg_dir/config.yml" << 'YML'
+  cat >"$lg_dir/config.yml" <<'YML'
 gui:
   showIcons: true
   nerdFontsVersion: "3"
@@ -378,7 +411,7 @@ mod_nvim() {
 
   if [[ -n "$nvim_bin" ]] && "$nvim_bin" --version &>/dev/null; then
     mapfile -t nvim_paths < <(which -a nvim 2>/dev/null | awk '!seen[$0]++')
-    if (( ${#nvim_paths[@]} > 1 )); then
+    if ((${#nvim_paths[@]} > 1)); then
       warn "Multiple nvim binaries detected: ${nvim_paths[*]}"
       info "Using first nvim in PATH: $nvim_bin"
     fi
@@ -411,8 +444,8 @@ mod_nvim() {
     pipx install pynvim 2>/dev/null || pip3 install --user --quiet pynvim || true
   fi
   if have npm; then
-    sudo npm install -g --silent neovim tree-sitter-cli 2>/dev/null \
-      || warn "npm global install (neovim, tree-sitter-cli) ni uspel."
+    sudo npm install -g --silent neovim tree-sitter-cli 2>/dev/null ||
+      warn "npm global install (neovim, tree-sitter-cli) ni uspel."
   fi
 
   # --- LazyVim starter ---
@@ -430,8 +463,8 @@ mod_nvim() {
   fi
 
   info "Bootstrapping LazyVim plugins (headless)..."
-  "$nvim_bin" --headless "+Lazy! sync" +qa 2>/dev/null \
-    || warn "Lazy sync ni uspel — zaženi 'nvim' ročno in počakaj na install."
+  "$nvim_bin" --headless "+Lazy! sync" +qa 2>/dev/null ||
+    warn "Lazy sync ni uspel — zaženi 'nvim' ročno in počakaj na install."
   success "LazyVim ready."
 }
 
@@ -442,10 +475,10 @@ mod_eza() {
   if ! have eza; then
     info "Installing eza..."
     sudo mkdir -p /etc/apt/keyrings
-    wget -qO- https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
-      | sudo gpg --yes --dearmor -o /etc/apt/keyrings/gierens.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" \
-      | sudo tee /etc/apt/sources.list.d/gierens.list > /dev/null
+    wget -qO- https://raw.githubusercontent.com/eza-community/eza/main/deb.asc |
+      sudo gpg --yes --dearmor -o /etc/apt/keyrings/gierens.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" |
+      sudo tee /etc/apt/sources.list.d/gierens.list >/dev/null
     sudo chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list
     sudo apt-get update -qq && sudo apt-get install -y eza
   fi
@@ -458,7 +491,7 @@ mod_eza() {
 mod_fonts() {
   local font_dir="$HOME/.local/share/fonts"
   local font_dest="$font_dir/JetBrainsMono"
-  if compgen -G "$font_dest/*.ttf" > /dev/null 2>&1; then
+  if compgen -G "$font_dest/*.ttf" >/dev/null 2>&1; then
     success "JetBrainsMono Nerd Font already present — skipping download."
     return 0
   fi
@@ -478,15 +511,15 @@ mod_fonts() {
 mod_wezterm() {
   if ! have wezterm; then
     info "Installing WezTerm..."
-    curl -fsSL https://apt.fury.io/wez/gpg.key \
-      | sudo gpg --yes --dearmor -o /usr/share/keyrings/wezterm-fury.gpg
-    echo 'deb [signed-by=/usr/share/keyrings/wezterm-fury.gpg] https://apt.fury.io/wez/ * *' \
-      | sudo tee /etc/apt/sources.list.d/wezterm.list > /dev/null
+    curl -fsSL https://apt.fury.io/wez/gpg.key |
+      sudo gpg --yes --dearmor -o /usr/share/keyrings/wezterm-fury.gpg
+    echo 'deb [signed-by=/usr/share/keyrings/wezterm-fury.gpg] https://apt.fury.io/wez/ * *' |
+      sudo tee /etc/apt/sources.list.d/wezterm.list >/dev/null
     sudo apt-get update -qq && sudo apt-get install -y wezterm
   fi
 
   backup_if_exists ~/.wezterm.lua
-  cat > ~/.wezterm.lua << 'EOF'
+  cat >~/.wezterm.lua <<'EOF'
 local wezterm = require("wezterm")
 local act = wezterm.action
 local config = wezterm.config_builder()
@@ -502,7 +535,8 @@ config.font_size = 14.0
 config.window_background_opacity = 0.95
 config.default_cursor_style = "BlinkingBlock"
 -- "RESIZE" keeps a usable resize handle on GNOME/Wayland ("NONE" removes it)
-config.window_decorations = "RESIZE"
+config.enable_wayland = false
+config.window_decorations = "NONE"
 config.enable_scroll_bar = false
 config.window_padding = { left = "2cell", right = "2cell", top = "1cell", bottom = "0cell" }
 config.scrollback_lines = 20000
@@ -625,15 +659,15 @@ mod_ohmyzsh() {
 
   local zsh_custom="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 
-  [[ -d "$zsh_custom/themes/powerlevel10k" ]] || \
+  [[ -d "$zsh_custom/themes/powerlevel10k" ]] ||
     git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$zsh_custom/themes/powerlevel10k"
-  [[ -d "$zsh_custom/plugins/zsh-autosuggestions" ]] || \
+  [[ -d "$zsh_custom/plugins/zsh-autosuggestions" ]] ||
     git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "$zsh_custom/plugins/zsh-autosuggestions"
-  [[ -d "$zsh_custom/plugins/zsh-syntax-highlighting" ]] || \
+  [[ -d "$zsh_custom/plugins/zsh-syntax-highlighting" ]] ||
     git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting "$zsh_custom/plugins/zsh-syntax-highlighting"
 
-  [[ -f "$HOME/.p10k.zsh" ]] \
-    || note "~/.p10k.zsh ne obstaja — ob prvem zagonu zsh te pričaka 'p10k configure' wizard."
+  [[ -f "$HOME/.p10k.zsh" ]] ||
+    note "~/.p10k.zsh ne obstaja — ob prvem zagonu zsh te pričaka 'p10k configure' wizard."
 
   success "Zsh plugins installed."
 }
@@ -664,10 +698,11 @@ mod_delta() {
   if ! have delta; then
     info "Installing delta..."
     local tag ver darch
-    tag=$(gh_latest_tag dandavison/delta); ver="${tag#v}"
+    tag=$(gh_latest_tag dandavison/delta)
+    ver="${tag#v}"
     case "$ARCH" in
-      x86_64)  darch="x86_64-unknown-linux-musl" ;;
-      aarch64) darch="aarch64-unknown-linux-gnu" ;;
+    x86_64) darch="x86_64-unknown-linux-musl" ;;
+    aarch64) darch="aarch64-unknown-linux-gnu" ;;
     esac
     # delta tags carry no leading "v" -> use the normalized version in the filename
     fetch "https://github.com/dandavison/delta/releases/download/${tag}/delta-${ver}-${darch}.tar.gz" delta.tar.gz
@@ -689,8 +724,8 @@ mod_atuin() {
     local tag aarch
     tag=$(gh_latest_tag atuinsh/atuin)
     case "$ARCH" in
-      x86_64)  aarch="x86_64-unknown-linux-musl"  ;;
-      aarch64) aarch="aarch64-unknown-linux-musl" ;;
+    x86_64) aarch="x86_64-unknown-linux-musl" ;;
+    aarch64) aarch="aarch64-unknown-linux-musl" ;;
     esac
     fetch "https://github.com/atuinsh/atuin/releases/download/${tag}/atuin-${aarch}.tar.gz" atuin.tar.gz
     tar xf atuin.tar.gz
@@ -709,10 +744,11 @@ mod_hyperfine() {
   if ! have hyperfine; then
     info "Installing hyperfine..."
     local tag ver harch
-    tag=$(gh_latest_tag sharkdp/hyperfine); ver="${tag#v}"
+    tag=$(gh_latest_tag sharkdp/hyperfine)
+    ver="${tag#v}"
     case "$ARCH" in
-      x86_64)  harch="x86_64-unknown-linux-musl" ;;
-      aarch64) harch="aarch64-unknown-linux-gnu" ;;
+    x86_64) harch="x86_64-unknown-linux-musl" ;;
+    aarch64) harch="aarch64-unknown-linux-gnu" ;;
     esac
     fetch "https://github.com/sharkdp/hyperfine/releases/download/v${ver}/hyperfine-v${ver}-${harch}.tar.gz" hyperfine.tar.gz
     tar xf hyperfine.tar.gz
@@ -731,12 +767,14 @@ mod_lazydocker() {
   if ! have lazydocker; then
     info "Installing lazydocker..."
     local tag ver
-    tag=$(gh_latest_tag jesseduffield/lazydocker); ver="${tag#v}"
+    tag=$(gh_latest_tag jesseduffield/lazydocker)
+    ver="${tag#v}"
     fetch "https://github.com/jesseduffield/lazydocker/releases/download/${tag}/lazydocker_${ver}_Linux_${ARCH_ALT}.tar.gz" lazydocker.tar.gz
     tar xf lazydocker.tar.gz lazydocker
     sudo install lazydocker /usr/local/bin
   fi
-  local v; v=$(lazydocker --version 2>/dev/null | extract_semver)
+  local v
+  v=$(lazydocker --version 2>/dev/null | extract_semver)
   success "lazydocker ${v:-unknown}"
 }
 
@@ -748,18 +786,21 @@ mod_devtools() {
   if ! have gh; then
     info "Installing GitHub CLI..."
     sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | sudo dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg status=none
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+      sudo dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg status=none
     sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+      sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
     sudo apt-get update -qq && sudo apt-get install -y gh
     note "Prijavi se v GitHub CLI: gh auth login"
   fi
   success "gh $(gh --version | extract_semver)"
 
   # --- direnv (per-project env: IDF_PATH, target chip, secrets) ---
-  have direnv || { info "Installing direnv..."; sudo apt-get install -y direnv; }
+  have direnv || {
+    info "Installing direnv..."
+    sudo apt-get install -y direnv
+  }
   success "direnv $(direnv version 2>/dev/null || echo unknown)"
 
   # --- just (command runner) ---
@@ -768,8 +809,8 @@ mod_devtools() {
     local tag jarch
     tag=$(gh_latest_tag casey/just)
     case "$ARCH" in
-      x86_64)  jarch="x86_64-unknown-linux-musl"  ;;
-      aarch64) jarch="aarch64-unknown-linux-musl" ;;
+    x86_64) jarch="x86_64-unknown-linux-musl" ;;
+    aarch64) jarch="aarch64-unknown-linux-musl" ;;
     esac
     fetch "https://github.com/casey/just/releases/download/${tag}/just-${tag}-${jarch}.tar.gz" just.tar.gz
     tar xf just.tar.gz just
@@ -781,14 +822,16 @@ mod_devtools() {
   if ! have dust; then
     info "Installing dust..."
     local tag ver darch
-    tag=$(gh_latest_tag bootandy/dust); ver="${tag#v}"
+    tag=$(gh_latest_tag bootandy/dust)
+    ver="${tag#v}"
     case "$ARCH" in
-      x86_64)  darch="x86_64-unknown-linux-musl"  ;;
-      aarch64) darch="aarch64-unknown-linux-musl" ;;
+    x86_64) darch="x86_64-unknown-linux-musl" ;;
+    aarch64) darch="aarch64-unknown-linux-musl" ;;
     esac
     if fetch "https://github.com/bootandy/dust/releases/download/${tag}/dust-v${ver}-${darch}.tar.gz" dust.tar.gz 2>/dev/null; then
       tar xf dust.tar.gz
-      local bin; bin=$(find . -name 'dust' -type f | head -1)
+      local bin
+      bin=$(find . -name 'dust' -type f | head -1)
       [[ -n "$bin" ]] && sudo install "$bin" /usr/local/bin/dust
     else
       warn "dust download failed — preskočeno (ni kritično)."
@@ -859,11 +902,11 @@ mod_gitcfg() {
   if [[ -z "$(git config --global user.email || true)" ]]; then
     local gn="" ge=""
     if ask "Git user.name  : " gn && ask "Git user.email : " ge; then
-      [[ -n "$gn" ]] && git config --global user.name  "$gn"
+      [[ -n "$gn" ]] && git config --global user.name "$gn"
       [[ -n "$ge" ]] && git config --global user.email "$ge"
     fi
-    [[ -z "$(git config --global user.email || true)" ]] \
-      && note "git user.email ni nastavljen — nastavi: git config --global user.email you@example.com"
+    [[ -z "$(git config --global user.email || true)" ]] &&
+      note "git user.email ni nastavljen — nastavi: git config --global user.email you@example.com"
   fi
   success "git identity: $(git config --global user.name || echo '-') <$(git config --global user.email || echo '-')>"
 
@@ -895,7 +938,7 @@ mod_gitcfg() {
   local gi="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
   mkdir -p "$(dirname "$gi")"
   if [[ ! -f "$gi" ]]; then
-    cat > "$gi" <<'GI'
+    cat >"$gi" <<'GI'
 # --- editors / OS ---
 .DS_Store
 *.swp
@@ -935,7 +978,7 @@ GI
 mod_zshrc() {
   info "Writing ~/.zshrc..."
   backup_if_exists ~/.zshrc
-  cat > ~/.zshrc << 'ZSHRC'
+  cat >~/.zshrc <<'ZSHRC'
 # Reset XDG_CONFIG_HOME to default if it points to a Flatpak sandbox
 if [[ "$XDG_CONFIG_HOME" == *".var/app"* ]]; then
   export XDG_CONFIG_HOME="$HOME/.config"
@@ -1257,7 +1300,7 @@ ZSHRC
 mod_shell() {
   local zsh_path
   zsh_path=$(command -v zsh) || die "zsh ni nameščen."
-  grep -qx "$zsh_path" /etc/shells || echo "$zsh_path" | sudo tee -a /etc/shells > /dev/null
+  grep -qx "$zsh_path" /etc/shells || echo "$zsh_path" | sudo tee -a /etc/shells >/dev/null
   local cur
   cur=$(getent passwd "$USER" | cut -d: -f7)
   if [[ "$cur" != "$zsh_path" ]]; then
@@ -1273,7 +1316,10 @@ mod_shell() {
 # ==============================================================================
 declare -a EXECUTED=() FAILED=()
 for m in "${ALL_MODULES[@]}"; do
-  should_run "$m" || { info "-- skip: $m"; continue; }
+  should_run "$m" || {
+    info "-- skip: $m"
+    continue
+  }
   echo ""
   echo "=============================================================================="
   info "MODULE: $m"
@@ -1301,9 +1347,9 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 
 have python && python --version
-have nvim   && nvim --version | head -1
-have go     && go version
-have node   && echo "node $(node --version)"
+have nvim && nvim --version | head -1
+have go && go version
+have node && echo "node $(node --version)"
 if have lazygit; then
   LG_V=$(lazygit --version 2>/dev/null | extract_semver)
   echo "lazygit ${LG_V:-unknown}"
@@ -1312,9 +1358,9 @@ have docker && docker --version
 
 echo ""
 echo -e "${CYAN}Moduli OK:${NC} ${EXECUTED[*]:-none}"
-(( ${#FAILED[@]} )) && echo -e "${RED}Moduli FAILED:${NC} ${FAILED[*]}"
+((${#FAILED[@]})) && echo -e "${RED}Moduli FAILED:${NC} ${FAILED[*]}"
 
-if (( ${#POST_NOTES[@]} )); then
+if ((${#POST_NOTES[@]})); then
   echo ""
   echo -e "${YELLOW}── NASLEDNJI KORAKI ──────────────────────────${NC}"
   for n in "${POST_NOTES[@]}"; do echo -e "${YELLOW}  •${NC} $n"; done
