@@ -196,7 +196,7 @@ have() { command -v "$1" &>/dev/null; }
 ALL_MODULES=(
   base docker node golang pyenv uv lazygit nvim eza fonts wezterm vscode
   claude ohmyzsh gdu delta atuin hyperfine lazydocker devtools embedded
-  tealdeer flatpaks craft theme gitcfg zshrc shell
+  tealdeer flatpaks craft theme fastfetch gitcfg zshrc shell
 )
 RUN_MODULES=("${ALL_MODULES[@]}")
 declare -a SKIP_MODULES=()
@@ -1287,6 +1287,97 @@ mod_theme() {
   have qdbus6 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
   note "Catppuccin tema nameščena — odjavi in prijavi se, da se kurzorji in Kvantum usedejo."
   success "Catppuccin Macchiato theme installed."
+}
+
+# ==============================================================================
+# 20d. FASTFETCH — GaMa87 gradient logo + extended module list
+# ==============================================================================
+mod_fastfetch() {
+  have fastfetch || sudo dnf install -y fastfetch
+  local ff="$HOME/.config/fastfetch"
+  mkdir -p "$ff"
+  backup_if_exists "$ff/config.jsonc"
+
+  # Logo is truecolor ANSI (file-raw), so generate it instead of storing escape bytes here
+  python3 -I - "$ff/gama87.txt" <<'PY'
+import sys
+L = {
+'G':[" ██████╗ ","██╔════╝ ","██║  ███╗","██║   ██║","╚██████╔╝"," ╚═════╝ "],
+'a':["        "," ██████╗","██╔══██║","██║  ██║","╚██████║"," ╚═════╝"],
+'M':["███╗   ███╗","████╗ ████║","██╔████╔██║","██║╚██╔╝██║","██║ ╚═╝ ██║","╚═╝     ╚═╝"],
+'8':[" █████╗ ","██╔══██╗","╚█████╔╝","██╔══██╗","╚█████╔╝"," ╚════╝ "],
+'7':["███████╗","╚════██║","    ██╔╝","   ██╔╝ ","   ██║  ","   ╚═╝  "],
+}
+rows = [" ".join(L[c][i] for c in "GaMa87") for i in range(6)]
+stops = [(255,0,128),(170,60,255),(0,200,255),(0,255,170)]
+def grad(t):
+    t *= len(stops)-1; i = min(int(t), len(stops)-2); f = t-i
+    a,b = stops[i],stops[i+1]
+    return tuple(round(a[k]+(b[k]-a[k])*f) for k in range(3))
+W = max(len(r) for r in rows)
+out = []
+for y,r in enumerate(rows):
+    s = ""
+    for x,ch in enumerate(r):
+        if ch == " ": s += ch; continue
+        R,G,B = grad((x + y*1.5)/(W+9))
+        if ch != "█": R,G,B = (R//2,G//2,B//2)   # darker shadow
+        s += f"\033[1;38;2;{R};{G};{B}m{ch}"
+    out.append(s + "\033[0m")
+tag = "  ⟡ ─── ✦ ─── ⟡  "
+out.append("")
+out.append(" " * ((W - len(tag))//2) + "\033[38;2;170;60;255m" + tag + "\033[0m")
+open(sys.argv[1],"w").write("\n".join(out)+"\n")
+PY
+
+  cat >"$ff/config.jsonc" <<'JSONC'
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  "logo": {
+    "type": "file-raw",
+    "source": "~/.config/fastfetch/gama87.txt",
+    "position": "top",
+    "padding": { "top": 1, "left": 2, "right": 2 }
+  },
+  "display": {
+    "separator": "  ",
+    "color": { "keys": "magenta", "title": "cyan" },
+    "key": { "width": 15 }
+  },
+  "modules": [
+    { "type": "custom", "format": "\u001b[38;2;170;60;255m╭──────────────────────────────────────────────────────╮" },
+    { "type": "title", "key": "  ", "format": "{user-name}@{host-name}" },
+    { "type": "os",       "key": "  󰣛 OS" },
+    { "type": "host",     "key": "  󰌢 Host" },
+    { "type": "kernel",   "key": "   Kernel" },
+    { "type": "uptime",   "key": "  󰅐 Uptime" },
+    { "type": "packages", "key": "  󰏖 Packages" },
+    { "type": "shell",    "key": "   Shell" },
+    { "type": "display",  "key": "  󰍹 Display" },
+    { "type": "de",       "key": "  󰧨 DE" },
+    { "type": "wm",       "key": "   WM" },
+    { "type": "wmtheme",  "key": "  󰉼 WM Theme" },
+    { "type": "theme",    "key": "  󰏘 Theme" },
+    { "type": "icons",    "key": "   Icons" },
+    { "type": "font",     "key": "   Font" },
+    { "type": "cursor",   "key": "  󰆿 Cursor" },
+    { "type": "terminal", "key": "   Terminal" },
+    { "type": "terminalfont", "key": "   Term Font" },
+    { "type": "cpu",      "key": "  󰻠 CPU" },
+    { "type": "gpu",      "key": "  󰍛 GPU" },
+    { "type": "memory",   "key": "   Memory" },
+    { "type": "swap",     "key": "  󰓡 Swap" },
+    { "type": "disk",     "key": "  󰋊 Disk" },
+    { "type": "localip",  "key": "  󰩟 Local IP" },
+    { "type": "battery",  "key": "  󰁹 Battery" },
+    { "type": "poweradapter", "key": "  󰚥 Power" },
+    { "type": "locale",   "key": "   Locale" },
+    { "type": "custom", "format": "\u001b[38;2;170;60;255m╰──────────────────────────────────────────────────────╯" },
+    { "type": "colors", "symbol": "circle", "paddingLeft": 2 }
+  ]
+}
+JSONC
+  success "fastfetch configured (GaMa87 logo)."
 }
 
 # ==============================================================================
