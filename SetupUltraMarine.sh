@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HEX-LAB V0.2 - ULTRAMARINE LINUX (PLASMA) DEVELOPER ENVIRONMENT
+# HEX-LAB V0.3 - ULTRAMARINE LINUX (PLASMA) DEVELOPER ENVIRONMENT
 # Requires: Ultramarine Linux 44+ / Fedora-based, dnf5 | Run as normal user with sudo access
 #
 # Usage:
@@ -195,8 +195,8 @@ have() { command -v "$1" &>/dev/null; }
 # ==============================================================================
 ALL_MODULES=(
   base docker node golang pyenv uv lazygit nvim eza fonts wezterm vscode
-  ohmyzsh gdu delta atuin hyperfine lazydocker devtools embedded
-  tealdeer gitcfg zshrc shell
+  claude ohmyzsh gdu delta atuin hyperfine lazydocker devtools embedded
+  tealdeer flatpaks craft theme gitcfg zshrc shell
 )
 RUN_MODULES=("${ALL_MODULES[@]}")
 declare -a SKIP_MODULES=()
@@ -243,7 +243,8 @@ mod_base() {
     openssl-devel zlib-devel bzip2-devel readline-devel sqlite-devel \
     ncurses-devel xz tk-devel libxml2-devel xmlsec1-devel libffi-devel xz-devel \
     gdbm-devel libuuid-devel libnsl2-devel \
-    unzip zstd p7zip p7zip-plugins ca-certificates gnupg2 jq wl-clipboard mediawriter
+    unzip zstd p7zip p7zip-plugins ca-certificates gnupg2 jq wl-clipboard mediawriter \
+    flatpak google-noto-color-emoji-fonts
 
   # Na nekaterih (redkih) RPM buildih fd-find/bat še vedno postavita binarko pod drugim imenom
   [[ ! -e /usr/local/bin/fd ]] && have fdfind && sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
@@ -514,48 +515,239 @@ mod_wezterm() {
 
   backup_if_exists ~/.wezterm.lua
   cat >~/.wezterm.lua <<'EOF'
+-- ~/.wezterm.lua
+-- Leader = Ctrl+A (tmux style). Leader + ? lists every shortcut, fuzzy-searchable.
 local wezterm = require("wezterm")
 local act = wezterm.action
+local nf = wezterm.nerdfonts
 local config = wezterm.config_builder()
 
+-- Catppuccin Macchiato palette (for the tab and status bar)
+local c = {
+  crust = "#181926", mantle = "#1e2030", base = "#24273a",
+  surface0 = "#363a4f", surface1 = "#494d64", overlay0 = "#6e738d",
+  subtext0 = "#a5adcb", text = "#cad3f5",
+  mauve = "#c6a0f6", blue = "#8aadf4", sapphire = "#7dc4e4", teal = "#8bd5ca",
+  green = "#a6da95", yellow = "#eed49f", peach = "#f5a97f", red = "#ed8796",
+  lavender = "#b7bdf8",
+}
+
+-- Nerd Font glyph by name, with a fallback if the name ever disappears
+local function icon(name, fallback)
+  return nf[name] or fallback or ""
+end
+
 -- ==========================================
--- GENERAL SETTINGS
+-- LOOK
 -- ==========================================
 config.color_scheme = "Catppuccin Macchiato"
-config.term = "xterm-256color"
-config.default_prog = { "/usr/bin/env", "zsh", "-l" }
-config.font = wezterm.font("JetBrainsMono Nerd Font", { weight = "Medium" })
+config.font = wezterm.font_with_fallback({
+  { family = "JetBrainsMono Nerd Font", weight = "Medium", harfbuzz_features = { "calt=1", "liga=1" } },
+  "Noto Color Emoji",
+})
 config.font_size = 14.0
-config.window_background_opacity = 0.95
-config.default_cursor_style = "BlinkingBlock"
+config.line_height = 1.08
+config.warn_about_missing_glyphs = false
+
+config.window_background_opacity = 0.92
+config.wayland_window_background_blur = true -- frosted glass on KDE Plasma (Wayland)
+config.window_padding = { left = "2cell", right = "2cell", top = "1cell", bottom = "0.5cell" }
+config.inactive_pane_hsb = { saturation = 0.85, brightness = 0.65 } -- active pane stands out
+
+config.default_cursor_style = "BlinkingBar"
+config.cursor_blink_rate = 550
+config.cursor_blink_ease_in = "EaseOut"
+config.cursor_blink_ease_out = "EaseOut"
+config.cursor_thickness = "0.12cell"
+
+config.front_end = "WebGpu"
+config.webgpu_power_preference = "HighPerformance"
+config.max_fps = 120
+config.animation_fps = 60
+
 -- "RESIZE" keeps a usable resize handle on KDE Plasma/Wayland ("NONE" removes it)
-config.enable_wayland = false
-config.window_decorations = "NONE"
+config.enable_wayland = true
+config.window_decorations = "RESIZE"
 config.enable_scroll_bar = false
-config.window_padding = { left = "2cell", right = "2cell", top = "1cell", bottom = "0cell" }
-config.scrollback_lines = 20000
-config.audible_bell = "Disabled"
 config.adjust_window_size_when_changing_font_size = false
 
+config.audible_bell = "Disabled"
+config.visual_bell = {
+  fade_in_function = "EaseIn", fade_in_duration_ms = 80,
+  fade_out_function = "EaseOut", fade_out_duration_ms = 150,
+}
+config.colors = {
+  visual_bell = c.surface0,
+  split = c.surface1,
+  tab_bar = { background = "rgba(0,0,0,0)" },
+}
+
+config.command_palette_font_size = 14.0
+config.command_palette_bg_color = c.mantle
+config.command_palette_fg_color = c.text
+config.char_select_font_size = 14.0
+config.char_select_bg_color = c.mantle
+config.char_select_fg_color = c.text
+
+-- ==========================================
+-- BEHAVIOUR
+-- ==========================================
+config.term = "xterm-256color"
+config.default_prog = { "/usr/bin/env", "zsh", "-l" }
+config.scrollback_lines = 50000
+config.switch_to_last_active_tab_when_closing_tab = true
+config.status_update_interval = 1000
+config.unicode_version = 14
+config.selection_word_boundary = " \t\n{}[]()\"'`,;:│=&|"
+
+-- Ctrl+Click opens these; Leader+u picks one by keyboard
+config.hyperlink_rules = wezterm.default_hyperlink_rules()
+table.insert(config.hyperlink_rules, { regex = [[\b(localhost|127\.0\.0\.1):\d+\S*]], format = "http://$0" })
+-- Leader+e highlights these for one-key copying (on top of the built-in URLs, hashes, paths…)
+config.quick_select_patterns = {
+  [[\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b]], -- IPv4 (with port)
+  [[\b[0-9a-f]{7,40}\b]],                   -- git hashes
+  [[[\w.-]+@[\w.-]+\.\w+]],                 -- e-mail addresses
+}
+
 -- Maximize on startup
-wezterm.on("gui-startup", function(spawn_window)
-  local _, _, window = wezterm.mux.spawn_window(spawn_window or {})
+wezterm.on("gui-startup", function(cmd)
+  local _, _, window = wezterm.mux.spawn_window(cmd or {})
   window:gui_window():maximize()
 end)
 
--- Tab bar appearance
+-- ==========================================
+-- TAB BAR (rounded "pill" tabs with app icons)
+-- ==========================================
 config.use_fancy_tab_bar = false
 config.tab_bar_at_bottom = true
-config.hide_tab_bar_if_only_one_tab = true
+config.hide_tab_bar_if_only_one_tab = false -- keep the status bar visible
+config.show_new_tab_button_in_tab_bar = false
+config.tab_max_width = 32
+
+local process_icons = {
+  zsh = icon("dev_terminal", ">"), bash = icon("dev_terminal", ">"), fish = icon("dev_terminal", ">"),
+  nvim = icon("custom_vim", "v"), vim = icon("custom_vim", "v"),
+  git = icon("dev_git", "g"), lazygit = icon("dev_git", "g"),
+  node = icon("dev_nodejs_small", "n"), npm = icon("dev_nodejs_small", "n"), bun = icon("dev_nodejs_small", "n"),
+  python = icon("dev_python", "py"), python3 = icon("dev_python", "py"),
+  cargo = icon("dev_rust", "rs"), go = icon("seti_go", "go"),
+  docker = icon("linux_docker", "d"), ssh = icon("md_server_network", "ssh"),
+  btop = icon("md_chart_donut_variant", "b"), htop = icon("md_chart_donut_variant", "b"),
+  claude = icon("md_robot", "*"), adb = icon("dev_android", "a"),
+}
+
+local function basename(s)
+  return (s or ""):gsub("(.*[/\\])(.*)", "%2"):gsub("%.exe$", "")
+end
+
+local function tab_title(tab)
+  if tab.tab_title and #tab.tab_title > 0 then return tab.tab_title end
+  local pane = tab.active_pane
+  local proc = basename(pane.foreground_process_name)
+  local cwd = pane.current_working_dir
+  local dir = cwd and basename(cwd.file_path:gsub("/$", "")) or ""
+  if dir == wezterm.home_dir:gsub(".*/", "") then dir = "~" end
+  if proc == "zsh" or proc == "bash" or proc == "fish" or proc == "" then
+    return (process_icons[proc] or icon("dev_terminal")) .. "  " .. dir
+  end
+  return (process_icons[proc] or icon("cod_terminal_cmd", "$")) .. "  " .. proc
+end
+
+wezterm.on("format-tab-title", function(tab, _tabs, _panes, _cfg, hover, max_width)
+  local L, R = icon("ple_left_half_circle_thick", ""), icon("ple_right_half_circle_thick", "")
+  local bg, fg = c.surface0, c.subtext0
+  if tab.is_active then
+    bg, fg = c.mauve, c.crust
+  elseif hover then
+    bg, fg = c.surface1, c.text
+  end
+  local zoom = tab.active_pane.is_zoomed and (" " .. icon("md_magnify_plus_outline", "+")) or ""
+  local title = (tab.tab_index + 1) .. " " .. tab_title(tab) .. zoom
+  title = wezterm.truncate_right(title, max_width - 4)
+  return {
+    { Background = { Color = "rgba(0,0,0,0)" } }, { Text = " " },
+    { Foreground = { Color = bg } }, { Text = L },
+    { Background = { Color = bg } }, { Foreground = { Color = fg } },
+    { Attribute = { Intensity = tab.is_active and "Bold" or "Normal" } },
+    { Text = " " .. title .. " " },
+    { Background = { Color = "rgba(0,0,0,0)" } }, { Foreground = { Color = bg } }, { Text = R },
+  }
+end)
 
 -- ==========================================
--- LEADER KEY
+-- STATUS BAR (mode/workspace left; cwd, battery, clock right)
 -- ==========================================
-config.leader = { key = "a", mods = "CTRL", timeout_milliseconds = 1000 }
+local function pill(color, text)
+  return {
+    { Background = { Color = "rgba(0,0,0,0)" } }, { Foreground = { Color = color } },
+    { Text = icon("ple_left_half_circle_thick", "") },
+    { Background = { Color = color } }, { Foreground = { Color = c.crust } },
+    { Attribute = { Intensity = "Bold" } }, { Text = text },
+    "ResetAttributes",
+    { Background = { Color = "rgba(0,0,0,0)" } }, { Foreground = { Color = color } },
+    { Text = icon("ple_right_half_circle_thick", "") .. " " },
+  }
+end
+
+local function append(t, items)
+  for _, v in ipairs(items) do table.insert(t, v) end
+end
+
+wezterm.on("update-status", function(window, pane)
+  -- Left: leader / key-table indicator, then workspace
+  local left = { { Text = " " } }
+  local key_table = window:active_key_table()
+  if window:leader_is_active() then
+    append(left, pill(c.peach, icon("md_keyboard", "") .. " LEADER"))
+  elseif key_table then
+    append(left, pill(c.yellow, icon("md_arrow_expand_all", "") .. " " .. key_table:upper():gsub("_", " ")))
+  end
+  append(left, pill(c.blue, icon("cod_window", "") .. " " .. window:active_workspace()))
+  window:set_left_status(wezterm.format(left))
+
+  -- Right: cwd, battery, clock
+  local right = {}
+  local cwd = pane:get_current_working_dir()
+  if cwd then
+    local path = cwd.file_path:gsub("^" .. wezterm.home_dir, "~")
+    append(right, {
+      { Foreground = { Color = c.subtext0 } },
+      { Text = icon("md_folder_outline", "") .. " " .. wezterm.truncate_left(path, 40) .. "   " },
+    })
+  end
+  for _, b in ipairs(wezterm.battery_info()) do
+    local pct = math.floor(b.state_of_charge * 100 + 0.5)
+    local glyph = b.state == "Charging" and icon("md_battery_charging", "+")
+      or (pct > 60 and icon("md_battery_high", "") or pct > 25 and icon("md_battery_medium", "") or icon("md_battery_low", "!"))
+    local color = pct <= 20 and b.state ~= "Charging" and c.red or c.green
+    append(right, { { Foreground = { Color = color } }, { Text = glyph .. " " .. pct .. "%   " } })
+  end
+  append(right, pill(c.lavender, icon("md_clock_outline", "") .. " " .. wezterm.strftime("%H:%M")))
+  window:set_right_status(wezterm.format(right))
+end)
+
+-- Leader + t: toggle between see-through and solid background
+wezterm.on("toggle-opacity", function(window)
+  local o = window:get_config_overrides() or {}
+  o.window_background_opacity = (o.window_background_opacity == 1.0) and 0.92 or 1.0
+  window:set_config_overrides(o)
+end)
+
+-- ==========================================
+-- KEYS (Leader = Ctrl+A, then the key)
+-- ==========================================
+config.leader = { key = "a", mods = "CTRL", timeout_milliseconds = 1500 }
 
 config.keys = {
   -- Send "CTRL-A" to the terminal when pressing LEADER twice
   { key = "a",     mods = "LEADER|CTRL",  action = act.SendString("\x01") },
+  -- Shift+Enter inserts a newline in Claude Code and similar prompts
+  { key = "Enter", mods = "SHIFT",        action = act.SendString("\x1b\r") },
+
+  -- ===== HELP =====
+  { key = "?",     mods = "LEADER|SHIFT", action = act.ShowLauncherArgs({ flags = "FUZZY|KEY_ASSIGNMENTS" }) },
+  { key = "Space", mods = "LEADER",       action = act.ActivateCommandPalette },
 
   -- ===== PANE MANAGEMENT =====
   { key = "s",     mods = "LEADER",       action = act.SplitVertical({ domain = "CurrentPaneDomain" }) },
@@ -567,11 +759,23 @@ config.keys = {
   { key = "j",     mods = "LEADER",       action = act.ActivatePaneDirection("Down") },
   { key = "k",     mods = "LEADER",       action = act.ActivatePaneDirection("Up") },
   { key = "l",     mods = "LEADER",       action = act.ActivatePaneDirection("Right") },
+  -- Same without the leader
+  { key = "LeftArrow",  mods = "ALT|SHIFT", action = act.ActivatePaneDirection("Left") },
+  { key = "DownArrow",  mods = "ALT|SHIFT", action = act.ActivatePaneDirection("Down") },
+  { key = "UpArrow",    mods = "ALT|SHIFT", action = act.ActivatePaneDirection("Up") },
+  { key = "RightArrow", mods = "ALT|SHIFT", action = act.ActivatePaneDirection("Right") },
 
   { key = "H",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Left", 5 }) },
   { key = "J",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Down", 5 }) },
   { key = "K",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Up", 5 }) },
   { key = "L",     mods = "LEADER|SHIFT", action = act.AdjustPaneSize({ "Right", 5 }) },
+  -- Resize mode: hjkl / arrows repeatedly, Esc or Enter to leave
+  { key = "m",     mods = "LEADER",       action = act.ActivateKeyTable({ name = "resize_pane", one_shot = false }) },
+
+  { key = "p",     mods = "LEADER",       action = act.PaneSelect({ alphabet = "asdfghjkl" }) },
+  { key = "P",     mods = "LEADER|SHIFT", action = act.PaneSelect({ alphabet = "asdfghjkl", mode = "SwapWithActive" }) },
+  { key = "Space", mods = "LEADER|CTRL",  action = act.RotatePanes("Clockwise") },
+  { key = "!",     mods = "LEADER|SHIFT", action = wezterm.action_callback(function(_, pane) pane:move_to_new_tab() end) },
 
   { key = "z",     mods = "LEADER",       action = act.TogglePaneZoomState },
   { key = "o",     mods = "LEADER",       action = act.TogglePaneZoomState },
@@ -582,16 +786,8 @@ config.keys = {
   -- ===== TAB MANAGEMENT =====
   { key = "c",     mods = "LEADER",       action = act.SpawnTab("CurrentPaneDomain") },
   { key = "&",     mods = "LEADER|SHIFT", action = act.CloseCurrentTab({ confirm = true }) },
-
-  { key = "1",     mods = "LEADER",       action = act.ActivateTab(0) },
-  { key = "2",     mods = "LEADER",       action = act.ActivateTab(1) },
-  { key = "3",     mods = "LEADER",       action = act.ActivateTab(2) },
-  { key = "4",     mods = "LEADER",       action = act.ActivateTab(3) },
-  { key = "5",     mods = "LEADER",       action = act.ActivateTab(4) },
-  { key = "6",     mods = "LEADER",       action = act.ActivateTab(5) },
-  { key = "7",     mods = "LEADER",       action = act.ActivateTab(6) },
-  { key = "8",     mods = "LEADER",       action = act.ActivateTab(7) },
-  { key = "9",     mods = "LEADER",       action = act.ActivateTab(8) },
+  { key = "n",     mods = "LEADER",       action = act.ActivateTabRelative(1) },
+  { key = "b",     mods = "LEADER",       action = act.ActivateTabRelative(-1) },
 
   { key = "Tab",   mods = "LEADER",       action = act.ActivateLastTab },
   { key = "w",     mods = "LEADER",       action = act.ShowTabNavigator },
@@ -601,40 +797,90 @@ config.keys = {
     key = ",",
     mods = "LEADER",
     action = act.PromptInputLine({
-      description = "Rename tab:",
+      description = wezterm.format({ { Foreground = { Color = c.mauve } }, { Text = "Rename tab:" } }),
       action = wezterm.action_callback(function(window, _pane, line)
         if line then window:active_tab():set_title(line) end
       end),
     }),
   },
 
-  -- ===== SEARCH AND UTILITIES =====
+  -- ===== WORKSPACES (separate sets of tabs, like tmux sessions) =====
+  { key = "f",     mods = "LEADER",       action = act.ShowLauncherArgs({ flags = "FUZZY|WORKSPACES" }) },
+  {
+    key = "N",
+    mods = "LEADER|SHIFT",
+    action = act.PromptInputLine({
+      description = wezterm.format({ { Foreground = { Color = c.blue } }, { Text = "New workspace name:" } }),
+      action = wezterm.action_callback(function(window, pane, line)
+        if line and #line > 0 then
+          window:perform_action(act.SwitchToWorkspace({ name = line }), pane)
+        end
+      end),
+    }),
+  },
+  { key = "(",     mods = "LEADER|SHIFT", action = act.SwitchWorkspaceRelative(-1) },
+  { key = ")",     mods = "LEADER|SHIFT", action = act.SwitchWorkspaceRelative(1) },
+
+  -- ===== SEARCH, COPY AND UTILITIES =====
   { key = "Enter", mods = "ALT",          action = act.ToggleFullScreen },
   { key = "/",     mods = "LEADER",       action = act.Search("CurrentSelectionOrEmptyString") },
   { key = "[",     mods = "LEADER",       action = act.ActivateCopyMode },
   { key = "e",     mods = "LEADER",       action = act.QuickSelect },
+  {
+    key = "u",
+    mods = "LEADER",
+    action = act.QuickSelectArgs({
+      label = "open url",
+      patterns = { [[https?://\S+]] },
+      action = wezterm.action_callback(function(window, pane)
+        wezterm.open_with(window:get_selection_text_for_pane(pane))
+      end),
+    }),
+  },
+  { key = "i",     mods = "LEADER",       action = act.CharSelect({ copy_on_select = true, copy_to = "ClipboardAndPrimarySelection" }) },
+  { key = "t",     mods = "LEADER",       action = act.EmitEvent("toggle-opacity") },
+  { key = "g",     mods = "LEADER",       action = act.SpawnCommandInNewTab({ args = { "lazygit" } }) },
   { key = "r",     mods = "LEADER",       action = act.ReloadConfiguration },
+  { key = "k",     mods = "CTRL|SHIFT",   action = act.Multiple({ act.ClearScrollback("ScrollbackAndViewport"), act.SendKey({ key = "l", mods = "CTRL" }) }) },
+
+  -- Jump between shell prompts in the scrollback (starship/zsh OSC 133 marks)
+  { key = "UpArrow",   mods = "CTRL|SHIFT", action = act.ScrollToPrompt(-1) },
+  { key = "DownArrow", mods = "CTRL|SHIFT", action = act.ScrollToPrompt(1) },
+}
+
+config.key_tables = {
+  resize_pane = {
+    { key = "h", action = act.AdjustPaneSize({ "Left", 2 }) },
+    { key = "j", action = act.AdjustPaneSize({ "Down", 2 }) },
+    { key = "k", action = act.AdjustPaneSize({ "Up", 2 }) },
+    { key = "l", action = act.AdjustPaneSize({ "Right", 2 }) },
+    { key = "LeftArrow",  action = act.AdjustPaneSize({ "Left", 2 }) },
+    { key = "DownArrow",  action = act.AdjustPaneSize({ "Down", 2 }) },
+    { key = "UpArrow",    action = act.AdjustPaneSize({ "Up", 2 }) },
+    { key = "RightArrow", action = act.AdjustPaneSize({ "Right", 2 }) },
+    { key = "Escape", action = "PopKeyTable" },
+    { key = "Enter",  action = "PopKeyTable" },
+    { key = "q",      action = "PopKeyTable" },
+  },
 }
 
 -- ==========================================
--- PLUGIN: TABLINE
+-- MOUSE
 -- ==========================================
-local ok, tabline = pcall(wezterm.plugin.require, "https://github.com/michaelbrusegard/tabline.wez")
-if ok then
-  tabline.setup({
-    options = { theme = "Catppuccin Macchiato", section_separators = "", component_separators = "" },
-    sections = {
-      tabline_a    = { "mode" },
-      tabline_b    = { "workspace" },
-      tabline_c    = { "cpu" },
-      tab_active   = { "index", "tab", "zoomed" },
-      tab_inactive = { "index", "tab" },
-      tabline_x    = { "ram" },
-      tabline_y    = { "datetime" },
-      tabline_z    = { "hostname" },
-    },
-  })
-end
+config.mouse_bindings = {
+  -- Right click pastes
+  { event = { Down = { streak = 1, button = "Right" } }, mods = "NONE", action = act.PasteFrom("Clipboard") },
+  -- Plain click only selects; Ctrl+Click opens links
+  {
+    event = { Up = { streak = 1, button = "Left" } }, mods = "NONE",
+    action = act.CompleteSelection("ClipboardAndPrimarySelection"),
+  },
+  { event = { Up = { streak = 1, button = "Left" } }, mods = "CTRL", action = act.OpenLinkAtMouseCursor },
+  { event = { Down = { streak = 1, button = "Left" } }, mods = "CTRL", action = act.Nop },
+  -- Ctrl+scroll zooms the font
+  { event = { Down = { streak = 1, button = { WheelUp = 1 } } }, mods = "CTRL", action = act.IncreaseFontSize },
+  { event = { Down = { streak = 1, button = { WheelDown = 1 } } }, mods = "CTRL", action = act.DecreaseFontSize },
+}
 
 return config
 EOF
@@ -660,6 +906,23 @@ REPO
     sudo dnf install -y code
   fi
   success "code $(code --version 2>/dev/null | head -1 || echo unknown)"
+}
+
+# ==============================================================================
+# 12b. CLAUDE CODE (native installer -> ~/.local/bin/claude, self-updating)
+# ==============================================================================
+mod_claude() {
+  export PATH="$HOME/.local/bin:$PATH"
+  if ! have claude; then
+    info "Installing Claude Code..."
+    curl -fsSL https://claude.ai/install.sh | bash
+  fi
+  have claude || {
+    warn "Claude Code install ni uspel."
+    return 1
+  }
+  success "claude $(claude --version 2>/dev/null | extract_semver)"
+  note "Prijavi se v Claude Code: zaženi 'claude' (prvi zagon odpre prijavo)."
 }
 
 # ==============================================================================
@@ -904,6 +1167,129 @@ mod_tealdeer() {
 }
 
 # ==============================================================================
+# 20a. FLATPAKS — desktop apps from Flathub (system installation)
+# ==============================================================================
+FLATHUB_APPS=(
+  com.bambulab.BambuStudio      # Bambu Studio (3D print slicer)
+  io.gitlab.librewolf-community # LibreWolf
+)
+mod_flatpaks() {
+  have flatpak || sudo dnf install -y flatpak
+  sudo flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  local app
+  for app in "${FLATHUB_APPS[@]}"; do
+    if flatpak info --system "$app" &>/dev/null; then
+      success "$app already installed"
+      continue
+    fi
+    info "Installing $app..."
+    sudo flatpak install --system -y --noninteractive flathub "$app" ||
+      warn "$app install ni uspel."
+  done
+  note "LibreWolf nastavitve (fingerprinting, cookies, WebGL, gesla): glej instruction.md."
+  success "Flathub apps ready."
+}
+
+# ==============================================================================
+# 20b. CRAFT APPS — Storyteller flatpaks (GitHub release bundles + SolidCraft repo)
+# ==============================================================================
+# <github repo under storytold>:<bundle/app name>  -> app id ai.storyteller.<name>
+CRAFT_APPS=(
+  craft-launcher:artcraft-launcher
+  cadcraft:cadcraft
+  figcraft:figcraft
+  gridcraft:gridcraft
+  pdfcraft:pdfcraft
+  photocraft:photocraft
+  vectorcraft:vectorcraft
+  wordcraft:wordcraft
+)
+mod_craft() {
+  have flatpak || sudo dnf install -y flatpak
+  # Bundles pull their runtime from flathub, so the user installation needs it too
+  flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+  local entry repo name id tag ver cur
+  for entry in "${CRAFT_APPS[@]}"; do
+    repo="${entry%%:*}"
+    name="${entry#*:}"
+    id="ai.storyteller.${name}"
+    tag=$(gh_latest_tag "storytold/${repo}")
+    ver="${tag#v}"
+    # Bundles have no remote URL, so 'flatpak update' never touches them — compare versions here
+    cur=$(flatpak info --user "$id" 2>/dev/null | awk -F': *' '/^ *Version:/{print $2}' || true)
+    if [[ "$cur" == "$ver" ]]; then
+      success "$id $cur"
+      continue
+    fi
+    info "Installing $id ${ver} (trenutno: ${cur:-none})..."
+    fetch "https://github.com/storytold/${repo}/releases/download/${tag}/${name}-${ver}-linux-${ARCH}.flatpak" "${name}.flatpak"
+    flatpak install --user -y --noninteractive --reinstall "${name}.flatpak" ||
+      warn "$id install ni uspel."
+  done
+
+  # SolidCraft ships a real (unsigned) flatpak repo, so it updates with 'flatpak update'
+  flatpak remote-add --user --if-not-exists --no-gpg-verify solidcraft https://docs.solidcraft.io/flatpak/repo/
+  flatpak info --user ai.storyteller.solidcraft &>/dev/null ||
+    flatpak install --user -y --noninteractive solidcraft ai.storyteller.solidcraft ||
+    warn "ai.storyteller.solidcraft install ni uspel."
+  success "Craft apps ready."
+}
+
+# ==============================================================================
+# 20c. THEME — Catppuccin Macchiato (Mauve) for KDE Plasma 6
+#   global theme + colors + aurorae (Modern) + cursors  <- catppuccin/kde
+#   widget style  <- catppuccin/kvantum | icons <- Papirus-Dark + catppuccin folders
+# ==============================================================================
+mod_theme() {
+  have plasmashell || {
+    warn "KDE Plasma ni zaznan — preskakujem temo."
+    return 0
+  }
+  info "Installing Catppuccin Macchiato (Mauve) theme..."
+  sudo dnf install -y --setopt=install_weak_deps=False kvantum
+
+  local src="$WORK_DIR/catppuccin"
+  mkdir -p "$src"
+  git clone --depth=1 -q https://github.com/catppuccin/kde "$src/kde"
+  git clone --depth=1 -q https://github.com/catppuccin/kvantum "$src/kvantum"
+  git clone --depth=1 -q https://github.com/catppuccin/papirus-folders "$src/papirus-folders"
+
+  # Args: flavour 2=Macchiato, accent 4=Mauve, decorations 1=Modern; -q also applies the global theme
+  (cd "$src/kde" && ./install.sh -q 2 4 1) ||
+    warn "catppuccin/kde install ni uspel (zaženi v Plasma seji)."
+
+  # --- Kvantum widget style ---
+  local kv="$HOME/.config/Kvantum"
+  mkdir -p "$kv"
+  rm -rf "$kv/catppuccin-macchiato-mauve"
+  cp -r "$src/kvantum/themes/catppuccin-macchiato-mauve" "$kv/"
+  printf '[General]\ntheme=catppuccin-macchiato-mauve\n' >"$kv/kvantum.kvconfig"
+  kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle kvantum
+
+  # --- Papirus-Dark icons with Catppuccin folder colours ---
+  local icons="$HOME/.local/share/icons"
+  mkdir -p "$icons"
+  if [[ ! -d "$icons/Papirus" ]]; then
+    curl -fsSL https://raw.githubusercontent.com/PapirusDevelopmentTeam/papirus-icon-theme/master/install.sh |
+      DESTDIR="$icons" sh
+  fi
+  cp -r "$src/papirus-folders/src/"* "$icons/Papirus/"
+  curl -fsSL -o "$src/papirus-folders.sh" \
+    https://raw.githubusercontent.com/PapirusDevelopmentTeam/papirus-folders/master/papirus-folders
+  bash "$src/papirus-folders.sh" -C cat-macchiato-mauve --theme Papirus-Dark ||
+    warn "papirus-folders ni uspel."
+  kwriteconfig6 --file kdeglobals --group Icons --key Theme Papirus-Dark
+
+  # Some legacy (X11/GTK) apps still look for cursors in ~/.icons
+  [[ -e "$HOME/.icons" ]] || ln -s "$icons" "$HOME/.icons"
+
+  have qdbus6 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
+  note "Catppuccin tema nameščena — odjavi in prijavi se, da se kurzorji in Kvantum usedejo."
+  success "Catppuccin Macchiato theme installed."
+}
+
+# ==============================================================================
 # 21. GIT CONFIG (identity + sane defaults + global gitignore)
 # ==============================================================================
 mod_gitcfg() {
@@ -990,67 +1376,116 @@ mod_zshrc() {
   info "Writing ~/.zshrc..."
   backup_if_exists ~/.zshrc
   cat >~/.zshrc <<'ZSHRC'
+# ==========================================
+# Early setup (must stay above the p10k instant prompt)
+# ==========================================
 # Reset XDG_CONFIG_HOME to default if it points to a Flatpak sandbox
 if [[ "$XDG_CONFIG_HOME" == *".var/app"* ]]; then
   export XDG_CONFIG_HOME="$HOME/.config"
 fi
 
+# fastfetch prints before the prompt, so it doesn't clash with instant prompt
+if [[ -o interactive && -z "${SSH_CONNECTION:-}" ]] && (( $+commands[fastfetch] )); then
+  fastfetch
+fi
+
+typeset -g POWERLEVEL9K_INSTANT_PROMPT=quiet
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
-# Keep common system binary paths available in all shells.
-export PATH="/usr/local/bin:/usr/bin:$PATH"
-export PATH="$HOME/.local/bin:$PATH"   # pipx / uv tools
+# ==========================================
+# PATH (typeset -U drops duplicates, first entry wins)
+# ==========================================
+typeset -U path PATH
+export PYENV_ROOT="$HOME/.pyenv"
+path=(
+  $HOME/.local/bin                # pipx / uv tools
+  $PYENV_ROOT/bin
+  /usr/local/go/bin $HOME/go/bin
+  $HOME/Android/Sdk/platform-tools
+  /usr/local/bin /usr/bin
+  $path
+)
 
 # Pyenv
-export PYENV_ROOT="$HOME/.pyenv"
-[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
 if (( $+commands[pyenv] )); then
-  eval "$(pyenv init --path)"
-  eval "$(pyenv init -)"
+  eval "$(pyenv init - zsh)"
 fi
 unset PYENV_DIR
 
-# Go
-export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
-
-# Less
+# ==========================================
+# Environment
+# ==========================================
+export EDITOR=nvim VISUAL=nvim
 export LESS='-RXF'
+export BAT_THEME="Catppuccin Macchiato"
+# Coloured man pages through bat
+(( $+commands[bat] )) && export MANPAGER="sh -c 'col -bx | bat -l man -p'" MANROFFOPT="-c"
 
 # History
 HISTFILE=~/.zsh_history
 HISTSIZE=100000
 SAVEHIST=100000
-setopt SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS
-setopt EXTENDED_GLOB AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS INTERACTIVE_COMMENTS NO_BEEP
+setopt SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS HIST_VERIFY
+setopt EXTENDED_GLOB AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT INTERACTIVE_COMMENTS NO_BEEP
 
-# Completion
-zstyle ':completion:*' menu select
-zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
-zstyle ':completion:*:descriptions' format '%F{yellow}-- %d --%f'
-
-# FZF
-export FZF_DEFAULT_COMMAND='fd --hidden --strip-cwd-prefix --exclude .git'
-export FZF_DEFAULT_OPTS="--height 45% --layout=reverse --border --preview-window=right:55%"
-export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null || eza -T --color=always {}'"
-source <(fzf --zsh) 2>/dev/null
-export EDITOR=nvim VISUAL=nvim
-
+# ==========================================
 # Oh-My-Zsh  (zoxide se inicializira ročno spodaj — brez OMZ plugina, da ni dvojno)
+# ==========================================
 export ZSH="$HOME/.oh-my-zsh"
 ZSH_THEME="powerlevel10k/powerlevel10k"
 plugins=(git zsh-autosuggestions zsh-syntax-highlighting)
+
+# Autosuggestions: from history first, then completion; dim grey like Catppuccin overlay0
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#6e738d'
+ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=40
+
 if [[ -r "$ZSH/oh-my-zsh.sh" ]]; then
   source "$ZSH/oh-my-zsh.sh"
 else
   echo "[WARN] oh-my-zsh not found at $ZSH/oh-my-zsh.sh"
 fi
 
+# Completion (after OMZ so these win over its defaults)
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+zstyle ':completion:*' use-cache on
+zstyle ':completion:*' cache-path "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompcache"
+zstyle ':completion:*:descriptions' format '%F{#c6a0f6}-- %d --%f'
+zstyle ':completion:*:warnings' format '%F{#ed8796}-- ni zadetkov --%f'
+
+# ==========================================
+# FZF (Catppuccin Macchiato colours)
+# ==========================================
 # Safety aliases in case fd-find/bat ship under alternate binary names
 (( $+commands[fdfind] )) && ! (( $+commands[fd] ))  && alias fd='fdfind'
 (( $+commands[batcat] )) && ! (( $+commands[bat] )) && alias bat='batcat'
 
+if (( $+commands[fd] || $+commands[fdfind] )); then
+  export FZF_DEFAULT_COMMAND="${commands[fd]:-${commands[fdfind]}} --hidden --strip-cwd-prefix --exclude .git"
+elif (( $+commands[rg] )); then
+  export FZF_DEFAULT_COMMAND='rg --files --hidden --glob "!.git"'
+else
+  unset FZF_DEFAULT_COMMAND   # fzf falls back to its built-in walker
+fi
+[[ -n $FZF_DEFAULT_COMMAND ]] && export FZF_CTRL_T_COMMAND=$FZF_DEFAULT_COMMAND
+export FZF_DEFAULT_OPTS="--height 45% --layout=reverse --border=rounded --info=inline-right \
+--prompt='❯ ' --pointer='▶' --marker='✓' --preview-window=right:55%:border-left \
+--color=bg+:#363a4f,bg:-1,spinner:#f4dbd6,hl:#ed8796 \
+--color=fg:#cad3f5,header:#ed8796,info:#c6a0f6,pointer:#f4dbd6 \
+--color=marker:#b7bdf8,fg+:#cad3f5,prompt:#c6a0f6,hl+:#ed8796 \
+--color=selected-bg:#494d64,border:#494d64,label:#cad3f5"
+export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always {} 2>/dev/null || eza -T --color=always --icons=always {}'"
+export FZF_ALT_C_OPTS="--preview 'eza -T --level=2 --color=always --icons=always {}'"
+source <(fzf --zsh) 2>/dev/null
+
+# ==========================================
+# Keybindings
+# ==========================================
 # Extra Emacs-style keybindings (mark/kill/yank region)
 bindkey -e
 bindkey '^[b'  backward-word
@@ -1060,15 +1495,27 @@ bindkey '^@'   set-mark-command           # Ctrl+Space = oznacevanje
 bindkey '^X^K' kill-region
 bindkey '^[w'  copy-region-as-kill
 bindkey '^Y'   yank
+bindkey '^[[1;5D' backward-word           # Ctrl+←
+bindkey '^[[1;5C' forward-word            # Ctrl+→
+bindkey '^H'   backward-kill-word         # Ctrl+Backspace
+bindkey '^[[3;5~' kill-word               # Ctrl+Delete
 autoload -Uz edit-command-line && zle -N edit-command-line
 bindkey '^X^E' edit-command-line
-zle_highlight=('region:bg=#45475a')
+zle_highlight=('region:bg=#494d64' 'paste:none')
 
-# File listing
-alias ls='eza --icons'
-alias l='eza -lh --icons --group-directories-first'
-alias ll='eza -lah --icons'
-alias lt='eza --tree --icons --level=2'
+# CTRL+Z v shellu prinese zadnji job nazaj v ospredje
+fancy-ctrl-z() { fg 2>/dev/null || true }
+zle -N fancy-ctrl-z
+bindkey '^Z' fancy-ctrl-z
+
+# ==========================================
+# Aliases
+# ==========================================
+# File listing ('--icons=auto': plain '--icons' would swallow the next argument)
+alias ls='eza --icons=auto --group-directories-first'
+alias l='eza -lh --icons=auto --group-directories-first --git'
+alias ll='eza -lah --icons=auto --group-directories-first --git'
+alias lt='eza --tree --icons=auto --level=2'
 
 # Better defaults
 #   'cat' ostane pravi cat (binarni stream, heredoc, redirect); bat je pod 'c'
@@ -1083,6 +1530,7 @@ duh() { du -sh "${@:-.}"; }   # namesto alias du='du -sh' (ne pokvari du -a ipd.
 alias ..='cd ..'
 alias ...='cd ../..'
 alias ....='cd ../../..'
+alias d='dirs -v | head -10'  # skok nazaj: cd -<številka>
 
 # Git shortcuts
 alias gs='git status -sb'
@@ -1091,6 +1539,7 @@ alias gl='git pull'
 alias gd='git diff'
 alias ga='git add -p'
 alias grbi='git rebase -i origin/main'
+alias glog='git log --graph --pretty="%C(#8aadf4)%h%Creset %C(#a6da95)%ar%Creset %s %C(#c6a0f6)%d%Creset" -20'
 
 # Editor
 alias vi='nvim'
@@ -1106,7 +1555,8 @@ alias mv='mv -i'
 alias serve='python -m http.server 8000'
 
 # Show PATH entries one per line
-alias path='echo $PATH | tr ":" "\n"'
+alias path='print -l $path'
+alias solidcraft-cli='flatpak run --command=solidcraft-cli ai.storyteller.solidcraft'
 
 # Clear + fastfetch
 alias cl='clear && fastfetch'
@@ -1128,67 +1578,8 @@ alias disk='gdu'
 (( $+commands[dust] )) && alias dd2='dust'
 
 # ==========================================
-# ESP-IDF via Docker
-idf55() {
-  docker run --rm \
-    -v "$(pwd):/project" \
-    -w /project \
-    --privileged \
-    --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-    -it espressif/idf:v5.5.5 \
-    idf.py "$@"
-}
-
-idf50() {
-  docker run --rm \
-    -v "$(pwd):/project" \
-    -w /project \
-    --privileged \
-    --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-    -it espressif/idf:v5.0.8 \
-    idf.py "$@"
-}
-
-sbom50() {
-  docker run --rm \
-    -v "$(pwd):/project" \
-    -w /project \
-    -it espressif/idf:v5.0.8 \
-    bash -lc '
-      pip install --upgrade pip --quiet
-      python -m pip install --quiet esp-idf-sbom==1.3.0 &&
-      python -m esp_idf_sbom "$@"
-    ' -- "$@"
-}
-
-sbom55() {
-  docker run --rm \
-    -v "$(pwd):/project" \
-    -w /project \
-    -it espressif/idf:v5.5.5 \
-    bash -lc '
-      pip install --upgrade pip --quiet
-      python -m pip install --quiet esp-idf-sbom==1.3.0 &&
-      python -m esp_idf_sbom "$@"
-    ' -- "$@"
-}
-
-addr2line50() {
-docker run --rm \
--v "$(pwd):/project" \
--w /project \
--it espressif/idf:v5.0.8 \
-xtensa-esp32s3-elf-addr2line -pfiaC -e "$1" "${@:2}"
-}
-
-addr2line55() {
-docker run --rm \
--v "$(pwd):/project" \
--w /project \
--it espressif/idf:v5.5.5 \
-xtensa-esp32s3-elf-addr2line -pfiaC -e "$1" "${@:2}"
-}
-
+# Serial
+# ==========================================
 # Serial monitor brez Dockerja (hitrejši od idf.py monitor)
 mon() { picocom -b "${2:-1000000}" "${1:-/dev/ttyUSB0}"; }
 
@@ -1221,7 +1612,8 @@ mkcd() { mkdir -p "$1" && cd "$1"; }
 # fzf: open file in nvim
 fv() {
   local f
-  f=$(fd --type f --hidden --exclude .git | fzf --preview 'bat -n --color=always {}') \
+  f=$(eval "${FZF_DEFAULT_COMMAND:-find . -type f -not -path '*/.git/*'}" \
+      | fzf --preview 'bat -n --color=always {}') \
     && [[ -n "$f" ]] && nvim "$f"
 }
 
@@ -1241,6 +1633,7 @@ fkill() {
 
 # ripgrep + fzf -> nvim on matching line
 rgv() {
+  (( $+commands[rg] )) || { echo "rgv potrebuje ripgrep: sudo dnf install ripgrep"; return 1; }
   local out file line
   out=$(rg --line-number --no-heading --color=always "${1:-}" \
         | fzf --ansi --delimiter=: --preview 'bat --color=always -H {2} {1}') || return
@@ -1274,11 +1667,9 @@ lgg() {
 # Open nvim at git repo root regardless of cwd
 vconf() { nvim "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" }
 
-# CTRL+Z v shellu prinese zadnji job nazaj v ospredje
-fancy-ctrl-z() { fg 2>/dev/null || true }
-zle -N fancy-ctrl-z
-bindkey '^Z' fancy-ctrl-z
-
+# ==========================================
+# Tool hooks
+# ==========================================
 # Atuin — replaces CTRL+R with smart history search
 if (( $+commands[atuin] )); then
   eval "$(atuin init zsh --disable-up-arrow)"
@@ -1288,19 +1679,24 @@ fi
 # direnv — per-project env (IDF_PATH, target chip, secrets)
 (( $+commands[direnv] )) && eval "$(direnv hook zsh)"
 
+# zoxide (samo enkrat — brez OMZ zoxide plugina)
+(( $+commands[zoxide] )) && eval "$(zoxide init zsh)"
+
 # Keep arrow-down behavior stable even if plugins redefine widgets.
 bindkey '^[[B' down-line-or-history
 bindkey '^N' down-line-or-history
 
-# zoxide (samo enkrat — brez OMZ zoxide plugina)
-(( $+commands[zoxide] )) && eval "$(zoxide init zsh)"
-
+# ==========================================
+# Prompt
+# ==========================================
 [[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh
 
-if [[ -o interactive && -z "${SSH_CONNECTION:-}" ]] && (( $+commands[fastfetch] )); then
-  fastfetch
-fi
-typeset -g POWERLEVEL9K_INSTANT_PROMPT=quiet
+# Shell integration za skok med ukazi (WezTerm: Ctrl+Shift+↑/↓).
+# p10k sam vgradi oznake 133;A/B v prompt (preživijo tudi njegove osvežitve),
+# zato izklopimo podvojene oznake iz /etc/profile.d/wezterm.sh (cwd in user vars ostanejo).
+typeset -g POWERLEVEL9K_TERM_SHELL_INTEGRATION=true
+precmd_functions=(${precmd_functions:#__wezterm_semantic_precmd})
+preexec_functions=(${preexec_functions:#__wezterm_semantic_preexec})
 ZSHRC
   success ".zshrc written."
 }
@@ -1353,7 +1749,7 @@ kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║       HEX-LAB V0.2 — INSTALLED           ║${NC}"
+echo -e "${GREEN}║       HEX-LAB V0.3 — INSTALLED           ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
