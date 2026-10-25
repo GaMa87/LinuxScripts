@@ -1172,6 +1172,7 @@ mod_tealdeer() {
 FLATHUB_APPS=(
   com.bambulab.BambuStudio      # Bambu Studio (3D print slicer)
   io.gitlab.librewolf-community # LibreWolf
+  io.github.peazip.PeaZip       # PeaZip (WinRAR-like archive manager)
 )
 mod_flatpaks() {
   have flatpak || sudo dnf install -y flatpak
