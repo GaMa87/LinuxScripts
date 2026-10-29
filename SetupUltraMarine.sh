@@ -195,8 +195,8 @@ have() { command -v "$1" &>/dev/null; }
 # ==============================================================================
 ALL_MODULES=(
   base docker node golang pyenv uv lazygit nvim eza fonts wezterm vscode
-  claude ohmyzsh gdu delta atuin hyperfine lazydocker devtools embedded
-  tealdeer flatpaks craft theme fastfetch gitcfg zshrc shell
+  claude ohmyzsh gdu delta atuin hyperfine lazydocker yazi devtools embedded
+  tealdeer flatpaks craft theme panel deskdashboard fastfetch gitcfg zshrc shell
 )
 RUN_MODULES=("${ALL_MODULES[@]}")
 declare -a SKIP_MODULES=()
@@ -1057,6 +1057,31 @@ mod_lazydocker() {
 }
 
 # ==============================================================================
+# 17b. YAZI — terminal file manager
+# ==============================================================================
+mod_yazi() {
+  if ! have yazi; then
+    info "Installing yazi..."
+    local tag yarch
+    tag=$(gh_latest_tag sxyazi/yazi)
+    case "$ARCH" in
+    x86_64) yarch="x86_64-unknown-linux-musl" ;;
+    aarch64) yarch="aarch64-unknown-linux-musl" ;;
+    esac
+    fetch "https://github.com/sxyazi/yazi/releases/download/${tag}/yazi-${yarch}.zip" yazi.zip
+    unzip -oq yazi.zip
+    local bin
+    for bin in yazi ya; do
+      local f
+      f=$(find . -name "$bin" -type f | head -1)
+      [[ -z "$f" ]] && die "$bin binary not found in archive"
+      sudo install "$f" "/usr/local/bin/$bin"
+    done
+  fi
+  success "yazi $(yazi --version | extract_semver)"
+}
+
+# ==============================================================================
 # 18. DEVTOOLS — gh, direnv, just, dust
 # ==============================================================================
 mod_devtools() {
@@ -1288,6 +1313,209 @@ mod_theme() {
   have qdbus6 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
   note "Catppuccin tema nameščena — odjavi in prijavi se, da se kurzorji in Kvantum usedejo."
   success "Catppuccin Macchiato theme installed."
+}
+
+# ==============================================================================
+# 20c1. PANEL — centred floating bottom bar with my widgets (Plasma layout script)
+#   Replaces existing panels (after a config backup) unless the layout is already there.
+# ==============================================================================
+PANEL_LAUNCHERS=(
+  systemsettings.desktop
+  org.kde.discover.desktop
+  org.kde.dolphin.desktop
+  io.gitlab.librewolf-community.desktop
+  com.microsoft.VSCode.desktop
+  org.wezfurlong.wezterm.desktop
+  com.ktechpit.whatsie.desktop
+  com.bambulab.BambuStudio.desktop
+  dev.zed.Zed.desktop
+)
+# Left to right; the system tray brings its usual items (network, volume, battery …)
+PANEL_WIDGETS=(
+  org.kde.plasma.kickoff
+  org.kde.plasma.pager
+  org.kde.plasma.icontasks
+  org.kde.plasma.marginsseparator
+  org.kde.plasma.systemtray
+  org.kde.plasma.digitalclock
+  org.kde.plasma.showdesktop
+  org.kde.plasma.colorpicker
+  org.kde.plasma.systemmonitor.memory
+  org.kde.plasma.timer
+)
+
+# plasma_qdbus — first available qdbus binary, empty if none
+plasma_qdbus() {
+  local b
+  for b in qdbus6 qdbus-qt6 qdbus; do
+    have "$b" && {
+      echo "$b"
+      return 0
+    }
+  done
+}
+
+mod_panel() {
+  have plasmashell || {
+    warn "KDE Plasma ni zaznan — preskakujem panel."
+    return 0
+  }
+  local qd
+  qd=$(plasma_qdbus)
+  if [[ -z "$qd" ]] || ! "$qd" org.kde.plasmashell /PlasmaShell &>/dev/null; then
+    note "Panel ni nastavljen (Plasma ne teče) — ponovno zaženi: ./SetupUltraMarine.sh --only=panel iz Plasma seje."
+    return 0
+  fi
+
+  local widgets_js launchers_js
+  widgets_js=$(printf '"%s",' "${PANEL_WIDGETS[@]}")
+  launchers_js=$(printf '"applications:%s",' "${PANEL_LAUNCHERS[@]}")
+  local common_js="
+    var wanted = [${widgets_js%,}];
+    function hasLayout() {
+      var ps = panels();
+      for (var i = 0; i < ps.length; ++i) {
+        var types = ps[i].widgets().map(function (w) { return w.type; });
+        if (types.join(',') === wanted.join(',')) return true;
+      }
+      return false;
+    }"
+
+  local state
+  state=$("$qd" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+    "$common_js print(hasLayout() ? 'present' : 'missing');" 2>&1 || true)
+  if [[ "$state" == *present* ]]; then
+    success "Panel že ima to postavitev — ne spreminjam."
+    return 0
+  fi
+
+  local bak="$LOG_DIR/plasma_backup_$(date +%Y%m%d_%H%M%S)"
+  mkdir -p "$bak"
+  cp -f "$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc" "$HOME/.config/plasmashellrc" "$bak/" 2>/dev/null || true
+  info "Plasma nastavitve shranjene → $bak"
+
+  info "Building panel..."
+  local result
+  result=$("$qd" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+    $common_js
+    var old = panels();
+    for (var i = 0; i < old.length; ++i) old[i].remove();
+
+    var p = new Panel('org.kde.panel');
+    p.location = 'bottom';
+    p.height = 54;
+    p.alignment = 'center';
+    p.lengthMode = 'fit';
+    p.hiding = 'dodgewindows';
+    p.floating = true;
+
+    for (var i = 0; i < wanted.length; ++i) {
+      var w = p.addWidget(wanted[i]);
+      if (wanted[i] === 'org.kde.plasma.icontasks') {
+        w.currentConfigGroup = ['General'];
+        w.writeConfig('launchers', [${launchers_js%,}]);
+      } else if (wanted[i] === 'org.kde.plasma.digitalclock') {
+        w.currentConfigGroup = ['Appearance'];
+        w.writeConfig('showWeekNumbers', true);
+        w.writeConfig('enabledCalendarPlugins', ['pimevents', 'holidaysevents', 'astronomicalevents']);
+      } else if (wanted[i] === 'org.kde.plasma.systemmonitor.memory') {
+        w.currentConfigGroup = ['Appearance'];
+        w.writeConfig('chartFace', 'org.kde.ksysguard.piechart');
+        w.writeConfig('title', 'Memory Usage');
+        w.currentConfigGroup = ['SensorColors'];
+        w.writeConfig('memory/physical/used', '198,160,246');   // Catppuccin mauve
+      }
+      w.reloadConfig();
+    }
+    print(hasLayout() ? 'built' : 'incomplete');" 2>&1 || true)
+
+  case "$result" in
+  *built*) success "Panel nastavljen (spodaj, na sredini, lebdeč)." ;;
+  *) warn "Panel ni v celoti nastavljen (${result:-ni odgovora}). Varnostna kopija: $bak" ;;
+  esac
+}
+
+# ==============================================================================
+# 20c2. DESK DASHBOARD — weather + clock + calendar Plasma widget (GaMa87)
+#   source: local checkout if present, otherwise GitHub
+# ==============================================================================
+DESKDASH_ID="io.github.gama87.deskdashboard"
+DESKDASH_REPO="https://github.com/GaMa87/plasma-deskdashboard"
+DESKDASH_LOCAL="$HOME/Projects/SW/plasma-deskdashboard"
+# Settings for a newly placed widget (General group of the widget config)
+DESKDASH_CONFIG=(
+  city=Velenje
+  latitude=46.35719
+  longitude=15.11277
+  units=1         # 0 = po regiji, 1 = metrično, 2 = imperialno
+  clockFormat=2   # 0 = po regiji, 1 = 12 h, 2 = 24 h
+  showSeconds=true
+  showWeekNumbers=true
+)
+mod_deskdashboard() {
+  have plasmashell || {
+    warn "KDE Plasma ni zaznan — preskakujem Desk Dashboard."
+    return 0
+  }
+  # PIM Events plugin + Akonadi resources (Google, CalDAV …) for calendar events
+  sudo dnf install -y --setopt=install_weak_deps=False kdepim-addons kdepim-runtime
+
+  local src="$DESKDASH_LOCAL"
+  if [[ ! -f "$src/package/metadata.json" ]]; then
+    src="$WORK_DIR/plasma-deskdashboard"
+    git clone --depth=1 -q "$DESKDASH_REPO" "$src" || {
+      warn "Desk Dashboard: kloniranje $DESKDASH_REPO ni uspelo."
+      return 1
+    }
+  fi
+
+  if kpackagetool6 -t Plasma/Applet -s "$DESKDASH_ID" &>/dev/null; then
+    info "Updating Desk Dashboard..."
+    kpackagetool6 -t Plasma/Applet -u "$src/package" >/dev/null
+  else
+    info "Installing Desk Dashboard..."
+    kpackagetool6 -t Plasma/Applet -i "$src/package" >/dev/null
+  fi
+
+  # Place it on the desktop only from a running Plasma session, and only once
+  local qdbus_bin
+  qdbus_bin=$(plasma_qdbus)
+  if [[ -z "$qdbus_bin" ]] || ! "$qdbus_bin" org.kde.plasmashell /PlasmaShell &>/dev/null; then
+    note "Desk Dashboard nameščen — dodaj ga ročno: desni klik na namizje → Add or Manage Widgets."
+    success "Desk Dashboard installed."
+    return 0
+  fi
+
+  local cfg_js="" kv
+  for kv in "${DESKDASH_CONFIG[@]}"; do
+    kv="${kv%%#*}"
+    kv="${kv%"${kv##*[![:space:]]}"}"
+    cfg_js+="w.writeConfig(\"${kv%%=*}\", \"${kv#*=}\");"
+  done
+
+  local result
+  result=$("$qdbus_bin" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+    (function () {
+      var all = desktops();
+      for (var i = 0; i < all.length; ++i)
+        if (all[i].widgets('$DESKDASH_ID').length > 0) { print('present'); return; }
+      var d = desktopForScreen(0) || all[0];
+      var s = screenGeometry(d.screen);
+      var width = Math.min(1700, s.width - 80), height = Math.round(width / 4);
+      var w = d.addWidget('$DESKDASH_ID', Math.round((s.width - width) / 2), 20, width, height);
+      w.currentConfigGroup = ['General'];
+      $cfg_js
+      w.reloadConfig();
+      print('added');
+    })();" 2>&1 || true)
+
+  case "$result" in
+  *present*) success "Desk Dashboard je že na namizju." ;;
+  *added*) success "Desk Dashboard dodan na namizje." ;;
+  *) warn "Desk Dashboard: dodajanje na namizje ni uspelo (${result:-ni odgovora}) — dodaj ga ročno." ;;
+  esac
+  note "Desk Dashboard: Google koledar dodaj v nastavitvah widgeta → Calendars → Add Account… → Google Groupware."
+  success "Desk Dashboard ready."
 }
 
 # ==============================================================================
@@ -1754,6 +1982,16 @@ lgg() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) \
     && lazygit -p "$root" \
     || echo "Not a git repo."
+}
+
+# yazi — on quit cd into the directory yazi was in
+y() {
+  local tmp cwd
+  tmp=$(mktemp -t "yazi-cwd.XXXXXX")
+  yazi "$@" --cwd-file="$tmp"
+  cwd=$(<"$tmp")
+  [[ -n "$cwd" && "$cwd" != "$PWD" ]] && builtin cd -- "$cwd"
+  rm -f -- "$tmp"
 }
 
 # Open nvim at git repo root regardless of cwd
