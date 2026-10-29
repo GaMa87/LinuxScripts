@@ -195,7 +195,7 @@ have() { command -v "$1" &>/dev/null; }
 # ==============================================================================
 ALL_MODULES=(
   base docker node golang pyenv uv lazygit nvim eza fonts wezterm vscode
-  claude ohmyzsh gdu delta atuin hyperfine lazydocker yazi devtools embedded
+  claude zed ohmyzsh gdu delta atuin hyperfine lazydocker yazi devtools embedded
   tealdeer flatpaks craft theme panel deskdashboard fastfetch gitcfg zshrc shell
 )
 RUN_MODULES=("${ALL_MODULES[@]}")
@@ -923,6 +923,220 @@ mod_claude() {
   }
   success "claude $(claude --version 2>/dev/null | extract_semver)"
   note "Prijavi se v Claude Code: zaženi 'claude' (prvi zagon odpre prijavo)."
+}
+
+# ==============================================================================
+# 12c. ZED EDITOR (official installer -> ~/.local/zed.app, self-updating) + config
+#   Catppuccin theme/icons, VS Code layout and keymap with vim mode, JetBrainsMono
+#   Nerd Font (module "fonts"), sticky scroll, rainbow brackets, inlay hints, inline
+#   diagnostics. Extensions listed in auto_install_extensions install on first start.
+# ==============================================================================
+mod_zed() {
+  export PATH="$HOME/.local/bin:$PATH"
+  if ! have zed; then
+    info "Installing Zed..."
+    curl -fsSL https://zed.dev/install.sh | sh
+  fi
+  have zed || {
+    warn "Zed install ni uspel."
+    return 1
+  }
+
+  mkdir -p ~/.config/zed
+  backup_if_exists ~/.config/zed/settings.json
+  cat >~/.config/zed/settings.json <<'ZEDCFG'
+// Zed settings
+//
+// For information on how to configure Zed, see the Zed
+// documentation: https://zed.dev/docs/configuring-zed
+//
+// To see all of Zed's default settings without changing your
+// custom settings, run `zed: open default settings` from the
+// command palette (cmd-shift-p / ctrl-shift-p)
+{
+  "proxy": "",
+
+  // ---------------------------------------------------------------- extensions (installed automatically)
+  "auto_install_extensions": {
+    "catppuccin": true, // theme
+    "catppuccin-icons": true, // file icons
+    "git-firefly": true, // syntax for commit messages, .gitignore, .gitattributes
+    "neocmake": true, // CMakeLists.txt with language server
+    "kconfig": true, // Kconfig / Kconfig.projbuild
+    "rainbow-csv": true, // ui_strings.csv in coloured columns
+    "log": true, // highlighted serial monitor logs (*.log)
+    "make": true,
+    "toml": true,
+    "ini": true,
+    "linkerscript": true, // ESP-IDF linker fragments (*.ld)
+    "xml": true,
+    "html": true,
+    "dockerfile": true
+  },
+
+  // ---------------------------------------------------------------- look
+  "theme": {
+    "mode": "system",
+    "light": "Catppuccin Latte",
+    "dark": "Catppuccin Mocha"
+  },
+  "icon_theme": {
+    "mode": "system",
+    "light": "Catppuccin Latte",
+    "dark": "Catppuccin Mocha"
+  },
+  "ui_font_size": 16,
+  "buffer_font_family": "JetBrainsMono Nerd Font",
+  "buffer_font_size": 15,
+  "buffer_font_features": { "calt": true, "liga": true }, // ligatures: != -> <= ==
+  "buffer_line_height": "comfortable",
+  "cursor_blink": true,
+  "cursor_animation": { "enabled": true },
+  "current_line_highlight": "all",
+  "colorize_brackets": true, // rainbow brackets
+  "unnecessary_code_fade": 0.5, // dim unused code reported by clangd
+  "show_whitespaces": "boundary",
+  "wrap_guides": [100], // matches ColumnLimit in .clang-format
+  "show_wrap_guides": true,
+  "indent_guides": {
+    "enabled": true,
+    "coloring": "indent_aware",
+    "active_line_width": 2
+  },
+
+  // ---------------------------------------------------------------- editor helpers
+  "vim_mode": true,
+  "base_keymap": "VSCode",
+  "relative_line_numbers": "enabled",
+  "sticky_scroll": { "enabled": true }, // keeps the current function header on top
+  "vertical_scroll_margin": 5,
+  "inlay_hints": {
+    "enabled": true, // parameter names and types from clangd
+    "show_background": true
+  },
+  "diagnostics": {
+    "inline": { "enabled": true } // errors shown at the end of the line
+  },
+  "lsp_document_colors": "inlay",
+  "auto_signature_help": true,
+  "hover_popover_delay": 300,
+  "gutter": {
+    "line_numbers": true,
+    "folds": true,
+    "runnables": true,
+    "breakpoints": true
+  },
+  "minimap": {
+    "show": "always",
+    "thumb": "hover",
+    "current_line_highlight": "line"
+  },
+  "scrollbar": {
+    "show": "auto",
+    "git_diff": true,
+    "search_results": true,
+    "selected_symbol": true,
+    "diagnostics": "all"
+  },
+  "autosave": "on_focus_change",
+
+  // ---------------------------------------------------------------- layout (VS Code style)
+  "project_panel": {
+    "dock": "left",
+    "starts_open": true,
+    "button": true,
+    "auto_reveal_entries": true,
+    "git_status": true,
+    "file_icons": true,
+    "folder_icons": true,
+    "bold_folder_labels": true,
+    "indent_size": 16,
+    "indent_guides": { "show": "always" },
+    "sticky_scroll": true,
+    "show_diagnostics": "all"
+  },
+  "outline_panel": { "dock": "left" },
+  "git_panel": { "dock": "left" },
+  "tabs": {
+    "file_icons": true,
+    "git_status": true,
+    "close_position": "right",
+    "show_diagnostics": "errors"
+  },
+  "tab_bar": { "show_nav_history_buttons": true },
+  "preview_tabs": { "enabled": true },
+  "toolbar": { "breadcrumbs": true, "quick_actions": true },
+  "title_bar": {
+    "show_menus": true,
+    "show_branch_name": true,
+    "show_project_items": true,
+    "show_user_picture": true
+  },
+  "status_bar": {
+    "cursor_position_button": true,
+    "active_language_button": true
+  },
+
+  // ---------------------------------------------------------------- git
+  "git": {
+    "inline_blame": {
+      "enabled": true,
+      "delay_ms": 500,
+      "show_commit_summary": true
+    },
+    "hunk_style": "staged_hollow"
+  },
+
+  // ---------------------------------------------------------------- terminal
+  "terminal": {
+    "dock": "bottom",
+    "font_size": 15.0,
+    "font_family": "JetBrainsMono Nerd Font Mono",
+    "line_height": "comfortable",
+    "cursor_shape": "bar",
+    "blinking": "on",
+    "copy_on_select": true,
+    "toolbar": { "breadcrumbs": true }
+  },
+
+  // ---------------------------------------------------------------- AI
+  "agent": {
+    "dock": "right",
+    "tool_permissions": {
+      "tools": {
+        "terminal": {
+          "default": "allow"
+        }
+      }
+    },
+    "default_model": {
+      "provider": "anthropic",
+      "model": "claude-opus-5-5",
+      "enable_thinking": true,
+      "effort": "high"
+    },
+    "favorite_models": [],
+    "model_parameters": []
+  },
+  "agent_servers": {
+    "claude-acp": {
+      "default_config_options": {
+        "mode": "auto"
+      },
+      "type": "registry"
+    },
+    "github-copilot-cli": {
+      "type": "registry"
+    }
+  },
+
+  "session": {
+    "trust_all_worktrees": true
+  }
+}
+ZEDCFG
+  success "$(zed --version 2>/dev/null | head -1 || echo 'zed unknown') configured."
+  note "Zed: ob prvem zagonu se namestijo razširitve (tema, ikone, CMake, Kconfig …) — počakaj nekaj sekund."
 }
 
 # ==============================================================================
