@@ -4,6 +4,9 @@
 # Requires: Ultramarine Linux 44+ / Fedora-based, dnf5 | Run as normal user with sudo access
 #
 # Usage:
+#   ./SetupUltraMarine.sh --update                  # Update installed tools, preserve user configuration
+#   ./SetupUltraMarine.sh --update --only=lazygit   # Update selected tools only
+#   Keep setup-update.sh next to this script when using --update.
 #   ./SetupUltraMarine.sh                      # vse
 #   ./SetupUltraMarine.sh --list               # izpis modulov
 #   ./SetupUltraMarine.sh --only=docker,nvim   # samo izbrani moduli
@@ -21,6 +24,17 @@
 }
 
 set -Eeuo pipefail
+
+UPDATE_MODE=0
+UPDATE_PLATFORM=fedora
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+for arg in "$@"; do [[ "$arg" == --update ]] && UPDATE_MODE=1; done
+if ((UPDATE_MODE)); then
+  source "$SCRIPT_DIR/setup-update.sh"
+fi
+run_selected_module() {
+  if ((UPDATE_MODE)); then update_module "$1"; else "mod_$1"; fi
+}
 
 # Unset any inherited CA overrides that might point to non-Ubuntu paths
 # (e.g. CURL_CA_BUNDLE=/etc/pki/... from RHEL/Fedora environments)
@@ -119,13 +133,14 @@ fi
   sudo -n true 2>/dev/null
   sleep 50
   kill -0 "$$" 2>/dev/null || exit
-done &) 2>/dev/null
+done) 2>/dev/null &
 SUDO_KEEPALIVE_PID=$!
 
 WORK_DIR=$(mktemp -d)
 ORIG_DIR=$(pwd)
 cleanup() {
   local rc=$?
+  kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   [[ -d "$ORIG_DIR" ]] && cd "$ORIG_DIR" || true
   rm -rf "$WORK_DIR"
   ((rc != 0)) && warn "Script failed/interrupted — temp files cleaned."
@@ -203,6 +218,7 @@ declare -a SKIP_MODULES=()
 
 for arg in "$@"; do
   case "$arg" in
+  --update) ;;
   --list)
     printf 'Moduli: %s\n' "${ALL_MODULES[*]}"
     exit 0
@@ -2275,7 +2291,7 @@ for m in "${ALL_MODULES[@]}"; do
   echo "=============================================================================="
   info "MODULE: $m"
   echo "=============================================================================="
-  if "mod_$m"; then
+  if run_selected_module "$m"; then
     EXECUTED+=("$m")
   else
     FAILED+=("$m")
@@ -2290,6 +2306,11 @@ trap - EXIT ERR
 [[ -d "$ORIG_DIR" ]] && cd "$ORIG_DIR" || true
 rm -rf "$WORK_DIR"
 kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+
+if ((UPDATE_MODE)); then
+  update_summary
+  exit $?
+fi
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"

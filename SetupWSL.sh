@@ -3,24 +3,38 @@
 # HEX-LAB V0.3 - WSL2 (WINDOWS 11) DEVELOPER ENVIRONMENT
 # Requires: Windows 11 + WSL2, Ubuntu 22.04+ distro | Run as normal user with sudo access
 #
-# Usage (znotraj WSL terminala, npr. Ubuntu):
-#   ./WSLSetup.sh                      # vse
-#   ./WSLSetup.sh --list               # izpis modulov
-#   ./WSLSetup.sh --only=docker,nvim   # samo izbrani moduli
-#   ./WSLSetup.sh --skip=pyenv,fonts   # vse razen izbranih
-#   GITHUB_TOKEN=ghp_... ./WSLSetup.sh # obide GitHub API rate limit
-#   HEXLAB_PY_FAST=1 ./WSLSetup.sh     # Python brez PGO/LTO (hiter build)
+# Usage (inside a WSL terminal, e.g. Ubuntu):
+#   ./SetupWSL.sh --update                  # Update installed tools, preserve user configuration
+#   ./SetupWSL.sh --update --only=lazygit   # Update selected tools only
+#   Keep setup-update.sh next to this script when using --update.
+#   ./SetupWSL.sh                      # All modules
+#   ./SetupWSL.sh --list               # List modules
+#   ./SetupWSL.sh --only=docker,nvim   # Selected modules only
+#   ./SetupWSL.sh --skip=pyenv,fonts   # All except selected modules
+#   GITHUB_TOKEN=ghp_... ./SetupWSL.sh # Authenticate GitHub API requests
+#   HEXLAB_PY_FAST=1 ./SetupWSL.sh     # Build Python without PGO/LTO
 # ==============================================================================
 
-# Must be executed (./WSLSetup.sh), not sourced - sourcing leaks pyenv's PYENV_DIR
+# Must be executed (./SetupWSL.sh), not sourced - sourcing leaks pyenv's PYENV_DIR
 # (pointing at the temp workdir) into the interactive shell, breaking it once
 # the workdir is removed at the end of the script.
 (return 0 2>/dev/null) && {
-  echo "Ne source-aj te skripte, pozeni jo z: ./WSLSetup.sh" >&2
+  echo "Do not source this script; run it with: ./SetupWSL.sh" >&2
   return 1
 }
 
 set -Eeuo pipefail
+
+UPDATE_MODE=0
+UPDATE_PLATFORM=wsl
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+for arg in "$@"; do [[ "$arg" == --update ]] && UPDATE_MODE=1; done
+if ((UPDATE_MODE)); then
+  source "$SCRIPT_DIR/setup-update.sh"
+fi
+run_selected_module() {
+  if ((UPDATE_MODE)); then update_module "$1"; else "mod_$1"; fi
+}
 
 # Unset any inherited CA overrides that might point to non-Ubuntu paths
 # (e.g. CURL_CA_BUNDLE=/etc/pki/... from RHEL/Fedora environments)
@@ -121,13 +135,14 @@ fi
   sudo -n true 2>/dev/null
   sleep 50
   kill -0 "$$" 2>/dev/null || exit
-done &) 2>/dev/null
+done) 2>/dev/null &
 SUDO_KEEPALIVE_PID=$!
 
 WORK_DIR=$(mktemp -d)
 ORIG_DIR=$(pwd)
 cleanup() {
   local rc=$?
+  kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   [[ -d "$ORIG_DIR" ]] && cd "$ORIG_DIR" || true
   rm -rf "$WORK_DIR"
   ((rc != 0)) && warn "Script failed/interrupted — temp files cleaned."
@@ -196,7 +211,7 @@ have() { command -v "$1" &>/dev/null; }
 # WSL: systemd is off by default — enable it in /etc/wsl.conf (docker, cron …)
 # ==============================================================================
 info "Preverjam /etc/wsl.conf (systemd)..."
-if ! grep -q '^systemd=true' /etc/wsl.conf 2>/dev/null; then
+if (( ! UPDATE_MODE )) && ! grep -q '^systemd=true' /etc/wsl.conf 2>/dev/null; then
   [[ -f /etc/wsl.conf ]] && sudo cp /etc/wsl.conf "/etc/wsl.conf.backup_$(date +%Y%m%d_%H%M%S)"
   sudo tee /etc/wsl.conf >/dev/null <<'WSLCONF'
 [boot]
@@ -231,6 +246,7 @@ declare -a SKIP_MODULES=()
 
 for arg in "$@"; do
   case "$arg" in
+  --update) ;;
   --list)
     printf 'Moduli: %s\n' "${ALL_MODULES[*]}"
     exit 0
@@ -1438,7 +1454,7 @@ for m in "${ALL_MODULES[@]}"; do
   echo "=============================================================================="
   info "MODULE: $m"
   echo "=============================================================================="
-  if "mod_$m"; then
+  if run_selected_module "$m"; then
     EXECUTED+=("$m")
   else
     FAILED+=("$m")
@@ -1453,6 +1469,11 @@ trap - EXIT ERR
 [[ -d "$ORIG_DIR" ]] && cd "$ORIG_DIR" || true
 rm -rf "$WORK_DIR"
 kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+
+if ((UPDATE_MODE)); then
+  update_summary
+  exit $?
+fi
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
