@@ -1,0 +1,1049 @@
+#!/usr/bin/env python3
+"""
+appimage-install — Integrate AppImages as native Linux desktop applications.
+
+Moves downloaded AppImages into ~/Applications/<AppName>.AppImage (version-free),
+creates a CLI symlink in ~/.local/bin/<slug>, extracts & installs icons, MIME
+packages, and .desktop entries into ~/.local/share/, and refreshes desktop caches.
+
+Can run on-demand, scan ~/Downloads, uninstall/list managed apps, or watch
+~/Downloads automatically via inotifywait (systemd user service).
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import datetime
+import glob
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+HOME = Path.home()
+APPS_DIR = HOME / "Applications"
+BIN_DIR = HOME / ".local" / "bin"
+DESKTOP_DIR = HOME / ".local" / "share" / "applications"
+ICONS_DIR = HOME / ".local" / "share" / "icons" / "hicolor"
+MIME_DIR = HOME / ".local" / "share" / "mime"
+STATE_DIR = HOME / ".local" / "share" / "appimage-installer"
+REGISTRY_FILE = STATE_DIR / "registry.json"
+
+GENERIC_NAMES = {
+    "",
+    "apprun",
+    "application",
+    "appimage",
+    "default",
+    "main",
+    "launcher",
+}
+
+TRAILING_NOISE_RE = re.compile(
+    r"[-_.\s]+(?:"
+    r"linux|ubuntu|debian|fedora|arch|gnu|musl|"
+    r"x86[_-]?64|amd64|x64|arm64|aarch64|i[36]86|ia32|x86|64bit|32bit|"
+    r"appimage|portable|glibc[\d.]*|conda|py\d+|qt\d+|gtk\d+|"
+    r"stable|release|latest|beta\d*|alpha\d*|rc\d*|nightly|dev|canary|"
+    r"build[-_a-z0-9]*|pr[-_]?\d+"
+    r")$",
+    re.IGNORECASE,
+)
+
+VERSION_SPLIT_RE = re.compile(
+    r"(?:[-_.\s]+v?\d+(?:\.\d+)+(?:[-_.\s+~].*)?|"
+    r"[-_\s]+v\d+(?:[-_.\s+~].*)?)$",
+    re.IGNORECASE,
+)
+
+PAREN_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def default_downloads_dir() -> Path:
+    try:
+        out = subprocess.check_output(
+            ["xdg-user-dir", "DOWNLOAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if out:
+            return Path(out)
+    except Exception:
+        pass
+    return HOME / "Downloads"
+
+
+def log(msg: str) -> None:
+    print(f"[appimage-install] {msg}", flush=True)
+
+
+def notify(title: str, body: str, icon: str = "application-x-executable", urgency: str = "normal") -> None:
+    if not shutil.which("notify-send"):
+        return
+    try:
+        subprocess.run(
+            [
+                "notify-send",
+                "-a",
+                "AppImage Installer",
+                "-u",
+                urgency,
+                "-i",
+                icon,
+                title,
+                body,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def load_registry() -> dict[str, dict[str, Any]]:
+    if not REGISTRY_FILE.exists():
+        return {}
+    try:
+        data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_registry(registry: dict[str, dict[str, Any]]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = REGISTRY_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, REGISTRY_FILE)
+
+
+def is_elf_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def has_libfuse2() -> bool:
+    try:
+        ctypes.CDLL("libfuse.so.2")
+        return True
+    except OSError:
+        pass
+    for pattern in (
+        "/usr/lib/libfuse.so.2",
+        "/usr/lib64/libfuse.so.2",
+        "/usr/lib/*-linux-gnu*/libfuse.so.2",
+        "/lib/*-linux-gnu*/libfuse.so.2",
+    ):
+        if glob.glob(pattern):
+            return True
+    return False
+
+
+def needs_fuse2_workaround(path: Path) -> bool:
+    if has_libfuse2():
+        return False
+    try:
+        with path.open("rb") as f:
+            header = f.read(512 * 1024)
+        return b"libfuse.so.2" in header
+    except OSError:
+        return False
+
+
+def strip_version_and_noise(raw: str) -> str:
+    name = raw.strip()
+    # Remove .AppImage extension (case-insensitive)
+    name = re.sub(r"\.appimage$", "", name, flags=re.IGNORECASE)
+
+    # Iteratively strip parenthesized suffixes, trailing arch/os tokens, and version tails
+    for _ in range(8):
+        prev = name
+        name = PAREN_SUFFIX_RE.sub("", name).strip()
+        name = TRAILING_NOISE_RE.sub("", name).strip()
+        m = VERSION_SPLIT_RE.search(name)
+        if m and m.start() > 0:
+            name = name[: m.start()].strip()
+        name = name.strip("-_. ")
+        if name == prev:
+            break
+
+    return name
+
+
+def sanitize_filename_stem(name: str) -> str:
+    cleaned = strip_version_and_noise(name)
+    if not cleaned:
+        cleaned = name.strip()
+    cleaned = re.sub(r"[/\\:*?\"<>|]+", "-", cleaned)
+    cleaned = re.sub(r"[\s_]+", "-", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    cleaned = cleaned.strip("-_. ")
+    return cleaned or "AppImage"
+
+
+def slugify(name: str) -> str:
+    slug = name.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")
+    return slug or "appimage"
+
+
+def run_extract(appimage: Path, cwd: Path, pattern: str | None = None) -> bool:
+    cmd = [str(appimage), "--appimage-extract"]
+    if pattern is not None:
+        cmd.append(pattern)
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=45,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def extract_metadata(appimage: Path, workdir: Path) -> Path | None:
+    patterns = [
+        "*.desktop",
+        "usr/share/applications/*.desktop",
+        "share/applications/*.desktop",
+        ".DirIcon",
+        "*.png",
+        "*.svg",
+        "*.xpm",
+        "usr/share/icons/*/*/*/*",
+        "usr/share/icons/*/*/*",
+        "usr/share/pixmaps/*",
+        "usr/share/mime/packages/*",
+    ]
+    for pat in patterns:
+        run_extract(appimage, workdir, pat)
+
+    root = workdir / "squashfs-root"
+    if not root.exists():
+        # Fallback: full extraction for runtimes that don't support glob args
+        run_extract(appimage, workdir, None)
+        if not root.exists():
+            return None
+
+    # Follow symlinks whose targets weren't extracted yet (e.g., Gall.desktop -> usr/share/...)
+    for _ in range(3):
+        missing_targets: set[str] = set()
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fname in filenames:
+                p = Path(dirpath) / fname
+                if p.is_symlink() and not p.exists():
+                    target = os.readlink(p)
+                    if target.startswith("/"):
+                        rel = target.lstrip("/")
+                    else:
+                        rel_path = (p.parent / target).resolve(strict=False)
+                        try:
+                            rel = str(rel_path.relative_to(root.resolve()))
+                        except ValueError:
+                            continue
+                    if rel and not rel.startswith(".."):
+                        missing_targets.add(rel)
+        if not missing_targets:
+            break
+        for rel in sorted(missing_targets):
+            run_extract(appimage, workdir, rel)
+
+    # If targeted extraction yielded no desktop file at all, try full extraction once
+    if not find_desktop_file(root):
+        run_extract(appimage, workdir, None)
+
+    return root if root.exists() else None
+
+
+def read_desktop_kv(path: Path) -> dict[str, str]:
+    kv: dict[str, str] = {}
+    in_main = False
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_main = stripped == "[Desktop Entry]"
+                continue
+            if in_main and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                if k not in kv:
+                    kv[k] = v.strip()
+    except OSError:
+        pass
+    return kv
+
+
+def find_desktop_file(root: Path) -> Path | None:
+    candidates: list[Path] = []
+    # 1. Top-level *.desktop (AppImage spec)
+    candidates.extend(sorted(root.glob("*.desktop")))
+    # 2. usr/share/applications/*.desktop & share/applications/*.desktop
+    for rel in ("usr/share/applications", "share/applications"):
+        d = root / rel
+        if d.is_dir():
+            candidates.extend(sorted(d.glob("*.desktop")))
+
+    valid: list[tuple[int, Path]] = []
+    seen: set[Path] = set()
+    for c in candidates:
+        if not c.exists():
+            continue
+        try:
+            real = c.resolve()
+        except OSError:
+            continue
+        if real in seen or not real.is_file():
+            continue
+        seen.add(real)
+        kv = read_desktop_kv(real)
+        if kv.get("Type", "Application") != "Application":
+            continue
+        nodisplay = kv.get("NoDisplay", "").lower() == "true"
+        score = 0 if not nodisplay else 1
+        valid.append((score, real))
+
+    if not valid:
+        return None
+    valid.sort(key=lambda x: x[0])
+    return valid[0][1]
+
+
+def install_icons(root: Path | None, slug: str) -> list[str]:
+    if root is None:
+        return []
+
+    installed: list[str] = []
+    has_256_png = False
+    has_scalable_svg = False
+    fallback_pngs: list[tuple[int, Path]] = []
+    fallback_svgs: list[Path] = []
+
+    def copy_icon(src: Path, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        installed.append(str(dest))
+
+    # 1. Copy structured hicolor icons
+    hicolor_root = root / "usr" / "share" / "icons" / "hicolor"
+    if hicolor_root.is_dir():
+        for size_dir in sorted(hicolor_root.iterdir()):
+            apps_subdir = size_dir / "apps"
+            if not apps_subdir.is_dir():
+                continue
+            for icon in sorted(apps_subdir.iterdir()):
+                if not icon.exists() or not icon.is_file():
+                    continue
+                ext = icon.suffix.lower()
+                if ext not in {".png", ".svg", ".xpm"}:
+                    continue
+                dest = ICONS_DIR / size_dir.name / "apps" / f"{slug}{ext}"
+                copy_icon(icon, dest)
+                if size_dir.name == "256x256" and ext == ".png":
+                    has_256_png = True
+                if size_dir.name == "scalable" and ext == ".svg":
+                    has_scalable_svg = True
+                if ext == ".png":
+                    fallback_pngs.append((icon.stat().st_size, icon))
+                elif ext == ".svg":
+                    fallback_svgs.append(icon)
+
+    # 2. Collect top-level icons (.DirIcon, *.svg, *.png, pixmaps)
+    top_candidates: list[Path] = []
+    dir_icon = root / ".DirIcon"
+    if dir_icon.exists() and dir_icon.is_file():
+        top_candidates.append(dir_icon.resolve())
+    for ext in ("*.svg", "*.png"):
+        for p in sorted(root.glob(ext)):
+            if p.exists() and p.is_file():
+                top_candidates.append(p.resolve())
+    pixmaps = root / "usr" / "share" / "pixmaps"
+    if pixmaps.is_dir():
+        for ext in ("*.svg", "*.png"):
+            for p in sorted(pixmaps.glob(ext)):
+                if p.exists() and p.is_file():
+                    top_candidates.append(p.resolve())
+
+    for p in top_candidates:
+        ext = p.suffix.lower()
+        # Detect format by magic bytes if extension is missing (e.g. .DirIcon)
+        if ext not in {".png", ".svg"}:
+            try:
+                head = p.read_bytes()[:64]
+                if head.startswith(b"\x89PNG\r\n\x1a\n"):
+                    ext = ".png"
+                elif b"<svg" in head.lower() or head.lstrip().startswith(b"<?xml"):
+                    ext = ".svg"
+            except OSError:
+                continue
+        if ext == ".svg":
+            fallback_svgs.append(p)
+        elif ext == ".png":
+            try:
+                fallback_pngs.append((p.stat().st_size, p))
+            except OSError:
+                pass
+
+    if not has_scalable_svg and fallback_svgs:
+        dest = ICONS_DIR / "scalable" / "apps" / f"{slug}.svg"
+        copy_icon(fallback_svgs[0], dest)
+
+    if not has_256_png and fallback_pngs:
+        # Prefer largest PNG for crisp 256x256 icon
+        fallback_pngs.sort(key=lambda x: x[0], reverse=True)
+        dest = ICONS_DIR / "256x256" / "apps" / f"{slug}.png"
+        copy_icon(fallback_pngs[0][1], dest)
+
+    # Deduplicate list while preserving order
+    return list(dict.fromkeys(installed))
+
+
+def install_mime_packages(root: Path | None, slug: str) -> list[str]:
+    if root is None:
+        return []
+    pkg_dir = root / "usr" / "share" / "mime" / "packages"
+    if not pkg_dir.is_dir():
+        return []
+    installed: list[str] = []
+    dest_dir = MIME_DIR / "packages"
+    for xml in sorted(pkg_dir.glob("*.xml")):
+        if not xml.is_file():
+            continue
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{slug}-{xml.name}"
+        shutil.copy2(xml, dest)
+        installed.append(str(dest))
+    return installed
+
+
+def escape_exec_path(path: Path) -> str:
+    s = str(path)
+    if any(ch in s for ch in ' \t\n"\'\\$`<>~|&;()*?#[]{}'):
+        escaped = (
+            s.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        )
+        return f'"{escaped}"'
+    return s
+
+
+def rewrite_exec_value(original_exec: str, appimage_path: Path, use_fuse2_env: bool) -> str:
+    args_str = ""
+    try:
+        tokens = shlex.split(original_exec)
+        # Strip leading env VAR=VAL pairs + the original binary token
+        idx = 0
+        if idx < len(tokens) and tokens[idx] == "env":
+            idx += 1
+            while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+                idx += 1
+        if idx < len(tokens):
+            idx += 1  # skip original executable
+        remaining = tokens[idx:]
+        if remaining:
+            # Keep desktop entry field codes (%U, %F, etc.) unquoted
+            formatted: list[str] = []
+            for tok in remaining:
+                if re.fullmatch(r"%[fFuUdDnNickvm]", tok):
+                    formatted.append(tok)
+                elif any(ch in tok for ch in " \t\"'\\"):
+                    formatted.append(f'"{tok.replace(chr(34), chr(92) + chr(34))}"')
+                else:
+                    formatted.append(tok)
+            args_str = " " + " ".join(formatted)
+    except ValueError:
+        parts = original_exec.strip().split(None, 1)
+        if len(parts) == 2:
+            args_str = " " + parts[1]
+
+    prefix = "env APPIMAGE_EXTRACT_AND_RUN=1 " if use_fuse2_env else ""
+    return f"{prefix}{escape_exec_path(appimage_path)}{args_str}"
+
+
+def build_desktop_file(
+    src_desktop: Path | None,
+    display_name: str,
+    slug: str,
+    appimage_path: Path,
+    icon_name: str,
+    source_filename: str,
+    use_fuse2_env: bool,
+) -> str:
+    if src_desktop is None or not src_desktop.exists():
+        exec_line = rewrite_exec_value("AppRun %U", appimage_path, use_fuse2_env)
+        return "\n".join(
+            [
+                "[Desktop Entry]",
+                "Version=1.0",
+                "Type=Application",
+                f"Name={display_name}",
+                f"TryExec={appimage_path}",
+                f"Exec={exec_line}",
+                f"Icon={icon_name}",
+                "Terminal=false",
+                "StartupNotify=true",
+                "Categories=Utility;",
+                "X-AppImage-Managed=true",
+                f"X-AppImage-Slug={slug}",
+                f"X-AppImage-Source={source_filename}",
+                "",
+            ]
+        )
+
+    lines = src_desktop.read_text(encoding="utf-8", errors="replace").splitlines()
+    out: list[str] = []
+    section = ""
+    seen_main_keys: set[str] = set()
+    main_insert_idx: int | None = None
+
+    def append_missing_main_keys() -> None:
+        extras: list[str] = []
+        if "Type" not in seen_main_keys:
+            extras.append("Type=Application")
+        if "Name" not in seen_main_keys:
+            extras.append(f"Name={display_name}")
+        if "TryExec" not in seen_main_keys:
+            extras.append(f"TryExec={appimage_path}")
+        if "Exec" not in seen_main_keys:
+            extras.append(f"Exec={rewrite_exec_value('AppRun %U', appimage_path, use_fuse2_env)}")
+        if "Icon" not in seen_main_keys:
+            extras.append(f"Icon={icon_name}")
+        if "StartupNotify" not in seen_main_keys:
+            extras.append("StartupNotify=true")
+        extras.extend(
+            [
+                "X-AppImage-Managed=true",
+                f"X-AppImage-Slug={slug}",
+                f"X-AppImage-Source={source_filename}",
+            ]
+        )
+        out.extend(extras)
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if section == "[Desktop Entry]":
+                append_missing_main_keys()
+                main_insert_idx = len(out)
+            section = stripped
+            out.append(line)
+            continue
+
+        if "=" in line and not stripped.startswith("#"):
+            key, val = line.split("=", 1)
+            key_s = key.strip()
+            val_s = val.strip()
+
+            if section == "[Desktop Entry]":
+                if key_s in {"X-AppImage-Managed", "X-AppImage-Slug", "X-AppImage-Source"}:
+                    continue
+                seen_main_keys.add(key_s)
+                if key_s == "Exec":
+                    out.append(f"Exec={rewrite_exec_value(val_s, appimage_path, use_fuse2_env)}")
+                    continue
+                if key_s == "TryExec":
+                    out.append(f"TryExec={appimage_path}")
+                    continue
+                if key_s == "Icon":
+                    out.append(f"Icon={icon_name}")
+                    continue
+                if key_s == "Name" and display_name:
+                    out.append(f"Name={display_name}")
+                    continue
+            elif section.startswith("[Desktop Action "):
+                if key_s == "Exec":
+                    out.append(f"Exec={rewrite_exec_value(val_s, appimage_path, use_fuse2_env)}")
+                    continue
+
+        out.append(line)
+
+    if section == "[Desktop Entry]" and main_insert_idx is None:
+        append_missing_main_keys()
+
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def refresh_caches(update_icons: bool = True, update_mime: bool = False) -> None:
+    if shutil.which("update-desktop-database"):
+        subprocess.run(
+            ["update-desktop-database", str(DESKTOP_DIR)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    if update_icons and ICONS_DIR.exists():
+        icon_cache_bin = shutil.which("gtk-update-icon-cache") or shutil.which("gtk4-update-icon-cache")
+        if icon_cache_bin:
+            subprocess.run(
+                [icon_cache_bin, "-f", "-t", str(ICONS_DIR)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    if update_mime and MIME_DIR.exists() and shutil.which("update-mime-database"):
+        subprocess.run(
+            ["update-mime-database", str(MIME_DIR)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def cleanup_old_artifacts(old_entry: dict[str, Any], keep_appimage: Path | None = None) -> None:
+    for p_str in old_entry.get("icons", []):
+        p = Path(p_str)
+        if p.exists() or p.is_symlink():
+            p.unlink(missing_ok=True)
+    for p_str in old_entry.get("mime_files", []):
+        p = Path(p_str)
+        if p.exists() or p.is_symlink():
+            p.unlink(missing_ok=True)
+    old_app = old_entry.get("appimage_path")
+    if old_app and (keep_appimage is None or Path(old_app) != keep_appimage):
+        Path(old_app).unlink(missing_ok=True)
+
+
+def install_appimage(
+    source: Path,
+    *,
+    copy_only: bool = False,
+    custom_name: str | None = None,
+    send_notify: bool = True,
+) -> dict[str, Any]:
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"File not found: {source}")
+    if not is_elf_file(source):
+        raise ValueError(f"Not a valid ELF/AppImage executable: {source.name}")
+
+    APPS_DIR.mkdir(parents=True, exist_ok=True)
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
+
+    source_filename = source.name
+    staged = APPS_DIR / f".staging-{os.getpid()}-{int(time.time() * 1000)}.AppImage"
+    moved_from_source = False
+
+    try:
+        if copy_only or source.parent == APPS_DIR:
+            shutil.copy2(source, staged)
+        else:
+            shutil.move(str(source), str(staged))
+            moved_from_source = True
+
+        staged.chmod(0o755)
+        use_fuse2_env = needs_fuse2_workaround(staged)
+
+        with tempfile.TemporaryDirectory(prefix="appimage-meta-") as tmp:
+            root = extract_metadata(staged, Path(tmp))
+            desktop_src = find_desktop_file(root) if root else None
+            desktop_kv = read_desktop_kv(desktop_src) if desktop_src else {}
+
+            if custom_name:
+                display_name = custom_name.strip()
+                file_stem = sanitize_filename_stem(custom_name)
+            else:
+                embedded_name = desktop_kv.get("Name", "").strip()
+                if embedded_name and embedded_name.lower() not in GENERIC_NAMES:
+                    display_name = embedded_name
+                    file_stem = sanitize_filename_stem(embedded_name)
+                else:
+                    file_stem = sanitize_filename_stem(source_filename)
+                    display_name = file_stem
+
+            slug = slugify(file_stem)
+            target_appimage = APPS_DIR / f"{file_stem}.AppImage"
+
+            registry = load_registry()
+            is_update = slug in registry
+            if is_update:
+                cleanup_old_artifacts(registry[slug], keep_appimage=target_appimage)
+
+            # Atomically move staged AppImage into its final version-free path
+            os.replace(staged, target_appimage)
+            target_appimage.chmod(0o755)
+            moved_from_source = False  # committed
+
+            # Remove original if user ran on a versioned file already inside ~/Applications
+            if not copy_only and source.parent == APPS_DIR and source != target_appimage:
+                source.unlink(missing_ok=True)
+
+            # Install icons & MIME packages
+            installed_icons = install_icons(root, slug)
+            installed_mime = install_mime_packages(root, slug)
+
+            if installed_icons:
+                icon_name = slug
+            else:
+                orig_icon = desktop_kv.get("Icon", "").strip()
+                icon_name = orig_icon if orig_icon else "application-x-executable"
+
+            # Create ~/.local/bin/<slug> symlink
+            bin_link = BIN_DIR / slug
+            bin_linked = False
+            if bin_link.is_symlink() or not bin_link.exists():
+                can_replace = True
+                if bin_link.is_symlink():
+                    try:
+                        link_target = bin_link.resolve(strict=False)
+                        if link_target.exists() and link_target.parent != APPS_DIR:
+                            can_replace = False
+                    except OSError:
+                        can_replace = True
+                if can_replace:
+                    bin_link.unlink(missing_ok=True)
+                    bin_link.symlink_to(target_appimage)
+                    bin_linked = True
+                else:
+                    log(f"Warning: {bin_link} points outside ~/Applications; skipping CLI symlink.")
+            else:
+                log(f"Warning: {bin_link} already exists as a regular file; skipping CLI symlink.")
+
+            # Write .desktop file
+            desktop_dest = DESKTOP_DIR / f"{slug}.desktop"
+            desktop_content = build_desktop_file(
+                src_desktop=desktop_src,
+                display_name=display_name,
+                slug=slug,
+                appimage_path=target_appimage,
+                icon_name=icon_name,
+                source_filename=source_filename,
+                use_fuse2_env=use_fuse2_env,
+            )
+            desktop_dest.write_text(desktop_content, encoding="utf-8")
+            desktop_dest.chmod(0o755)
+
+            refresh_caches(update_icons=bool(installed_icons), update_mime=bool(installed_mime))
+
+            entry = {
+                "slug": slug,
+                "name": display_name,
+                "appimage_path": str(target_appimage),
+                "bin_link": str(bin_link) if bin_linked else None,
+                "desktop_file": str(desktop_dest),
+                "icon": icon_name,
+                "icons": installed_icons,
+                "mime_files": installed_mime,
+                "source_filename": source_filename,
+                "fuse2_workaround": use_fuse2_env,
+                "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            registry[slug] = entry
+            save_registry(registry)
+
+            action_word = "Updated" if is_update else "Installed"
+            log(
+                f"{action_word} '{display_name}' -> {target_appimage} "
+                f"(desktop: {desktop_dest.name}"
+                + (f", cli: {slug}" if bin_linked else "")
+                + ")"
+            )
+            if send_notify:
+                body = f"~/Applications/{target_appimage.name}"
+                if bin_linked:
+                    body += f"\nCLI: {slug}"
+                notify(
+                    f"{'Updated' if is_update else 'Installed'}: {display_name}",
+                    body,
+                    icon=icon_name,
+                )
+            return entry
+
+    except Exception:
+        if staged.exists():
+            if moved_from_source and not source.exists():
+                try:
+                    shutil.move(str(staged), str(source))
+                except Exception:
+                    pass
+            else:
+                staged.unlink(missing_ok=True)
+        raise
+
+
+def remove_appimage(identifier: str, send_notify: bool = True) -> bool:
+    registry = load_registry()
+    slug = slugify(identifier)
+    if slug not in registry:
+        # Match by display name or filename stem
+        matches = [
+            k
+            for k, v in registry.items()
+            if v.get("name", "").lower() == identifier.lower()
+            or Path(v.get("appimage_path", "")).stem.lower() == identifier.lower()
+        ]
+        if len(matches) == 1:
+            slug = matches[0]
+        else:
+            log(f"AppImage '{identifier}' is not in registry. Use --list to see installed apps.")
+            return False
+
+    entry = registry.pop(slug)
+    name = entry.get("name", slug)
+    had_icons = bool(entry.get("icons"))
+    had_mime = bool(entry.get("mime_files"))
+
+    cleanup_old_artifacts(entry, keep_appimage=None)
+
+    desktop_file = entry.get("desktop_file")
+    if desktop_file:
+        Path(desktop_file).unlink(missing_ok=True)
+
+    bin_link = entry.get("bin_link")
+    if bin_link:
+        p = Path(bin_link)
+        if p.is_symlink():
+            p.unlink(missing_ok=True)
+
+    save_registry(registry)
+    refresh_caches(update_icons=had_icons, update_mime=had_mime)
+    log(f"Removed '{name}' ({slug}).")
+    if send_notify:
+        notify(f"Removed: {name}", f"AppImage '{slug}' has been uninstalled.")
+    return True
+
+
+def list_appimages() -> None:
+    registry = load_registry()
+    if not registry:
+        print("No managed AppImages installed.")
+        return
+    print(f"{'SLUG':<20} {'NAME':<22} {'APPIMAGE':<32} {'SOURCE'}")
+    print("-" * 100)
+    for slug, info in sorted(registry.items()):
+        app_name = Path(info.get("appimage_path", "")).name
+        print(
+            f"{slug:<20} {info.get('name', ''):<22} {app_name:<32} {info.get('source_filename', '')}"
+        )
+
+
+def scan_directory(directory: Path, copy_only: bool = False, send_notify: bool = True) -> int:
+    if not directory.is_dir():
+        log(f"Directory does not exist: {directory}")
+        return 1
+    files = sorted(
+        p
+        for p in directory.iterdir()
+        if p.is_file() and p.name.lower().endswith(".appimage") and not p.name.startswith(".")
+    )
+    if not files:
+        log(f"No .AppImage files found in {directory}")
+        return 0
+    errors = 0
+    for f in files:
+        try:
+            install_appimage(f, copy_only=copy_only, send_notify=send_notify)
+        except Exception as exc:
+            errors += 1
+            log(f"Error installing {f.name}: {exc}")
+            if send_notify:
+                notify("AppImage Error", f"{f.name}: {exc}", urgency="critical")
+    return 1 if errors else 0
+
+
+def wait_until_ready(path: Path, timeout_s: float = 15.0) -> bool:
+    """Wait until a newly created/moved AppImage has stabilized and is valid ELF."""
+    deadline = time.monotonic() + timeout_s
+    prev_size = -1
+    stable_checks = 0
+
+    while time.monotonic() < deadline:
+        if not path.exists():
+            return False
+        # Ignore while browser temp sibling still exists
+        if any(
+            Path(f"{path}{ext}").exists()
+            for ext in (".part", ".crdownload", ".tmp", ".download")
+        ):
+            time.sleep(0.5)
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size > 0 and size == prev_size:
+            stable_checks += 1
+            if stable_checks >= 2:
+                return is_elf_file(path)
+        else:
+            stable_checks = 0
+            prev_size = size
+        time.sleep(0.5)
+    return path.exists() and is_elf_file(path)
+
+
+def watch_directory(directory: Path, send_notify: bool = True) -> int:
+    if not shutil.which("inotifywait"):
+        log("Error: inotifywait not found (install inotify-tools).")
+        return 1
+
+    directory.mkdir(parents=True, exist_ok=True)
+    log(f"Watching {directory} for new .AppImage downloads...")
+
+    proc = subprocess.Popen(
+        [
+            "inotifywait",
+            "-m",
+            "-q",
+            "-e",
+            "close_write",
+            "-e",
+            "moved_to",
+            "--format",
+            "%f",
+            str(directory),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    def handle_sig(_signum: int, _frame: Any) -> None:
+        proc.terminate()
+
+    signal.signal(signal.SIGTERM, handle_sig)
+    signal.signal(signal.SIGINT, handle_sig)
+
+    assert proc.stdout is not None
+    try:
+        for raw_line in proc.stdout:
+            filename = raw_line.strip()
+            if not filename or filename.startswith("."):
+                continue
+            if not filename.lower().endswith(".appimage"):
+                continue
+            filepath = directory / filename
+            if not filepath.exists():
+                continue
+            log(f"Detected: {filename}")
+            if not wait_until_ready(filepath):
+                log(f"Skipped (incomplete or not ELF): {filename}")
+                continue
+            try:
+                install_appimage(filepath, copy_only=False, send_notify=send_notify)
+            except Exception as exc:
+                log(f"Failed to install {filename}: {exc}")
+                if send_notify:
+                    notify("AppImage Error", f"{filename}: {exc}", urgency="critical")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="appimage-install",
+        description="Install, update, remove, or auto-watch AppImages on Linux.",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="Path(s) to .AppImage file(s) to install",
+    )
+    parser.add_argument(
+        "--name",
+        help="Override clean application name (only when installing a single file)",
+    )
+    parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="Copy AppImage instead of moving it from the source directory",
+    )
+    parser.add_argument(
+        "--scan",
+        nargs="?",
+        const="__DEFAULT__",
+        metavar="DIR",
+        help="Scan directory (default: ~/Downloads) and install all .AppImage files",
+    )
+    parser.add_argument(
+        "--watch",
+        nargs="?",
+        const="__DEFAULT__",
+        metavar="DIR",
+        help="Watch directory (default: ~/Downloads) for new .AppImage downloads",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List all managed AppImages",
+    )
+    parser.add_argument(
+        "--remove",
+        metavar="NAME_OR_SLUG",
+        help="Uninstall a managed AppImage and all its desktop/CLI/icon files",
+    )
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Disable desktop notifications",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    send_notify = not args.no_notify
+
+    if args.list:
+        list_appimages()
+        return 0
+
+    if args.remove:
+        return 0 if remove_appimage(args.remove, send_notify=send_notify) else 1
+
+    if args.watch is not None:
+        watch_dir = default_downloads_dir() if args.watch == "__DEFAULT__" else Path(args.watch).expanduser()
+        return watch_directory(watch_dir, send_notify=send_notify)
+
+    if args.scan is not None:
+        scan_dir = default_downloads_dir() if args.scan == "__DEFAULT__" else Path(args.scan).expanduser()
+        return scan_directory(scan_dir, copy_only=args.copy, send_notify=send_notify)
+
+    if not args.files:
+        # Default convenience: scan ~/Downloads if called with no args
+        return scan_directory(default_downloads_dir(), copy_only=args.copy, send_notify=send_notify)
+
+    if args.name and len(args.files) > 1:
+        log("Error: --name can only be used when installing a single file.")
+        return 1
+
+    errors = 0
+    for f in args.files:
+        try:
+            install_appimage(
+                Path(f),
+                copy_only=args.copy,
+                custom_name=args.name,
+                send_notify=send_notify,
+            )
+        except Exception as exc:
+            errors += 1
+            log(f"Error installing {f}: {exc}")
+            if send_notify:
+                notify("AppImage Error", f"{Path(f).name}: {exc}", urgency="critical")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-install downloaded AppImages into ~/Applications
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/appimage-install --watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
