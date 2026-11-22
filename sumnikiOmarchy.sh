@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 
-# Šumniki na US tipkovnici za Omarchy (Arch + Hyprland).
-#
-# Namesto keyd uporablja lastno XKB razporeditev: Right Ctrl postane
-# tipka za 3. nivo (kot AltGr). Brez demona, brez sudo, brez compose
-# tipke - aplikacije dobijo prave znake, zato deluje povsod pod Waylandom.
-#
-# libxkbcommon bere ~/.config/xkb pred sistemskimi datotekami, tako da
-# razporeditev "ussi" doda samo nov symbols file. Omarchyjeva opcija
-# omarchy:shift_caps_compose (Shift + Caps Lock = Compose) ostane.
+# Šumniki na US tipkovnici za Omarchy (Right Ctrl = 3. nivo).
+# Layout -> hypr/input.lua, bližnjica Right Ctrl + P -> hypr/bindings.lua.
 
 set -euo pipefail
 
@@ -16,8 +9,11 @@ LAYOUT="ussi"
 XKB_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xkb/symbols"
 XKB_FILE="$XKB_DIR/$LAYOUT"
 INPUT_LUA="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/input.lua"
+BINDINGS_LUA="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
 MARK_BEGIN="-- >>> sumnikiOmarchy >>>"
 MARK_END="-- <<< sumnikiOmarchy <<<"
+BIND_MARK_BEGIN="-- >>> sumnikiOmarchy-bind >>>"
+BIND_MARK_END="-- <<< sumnikiOmarchy-bind <<<"
 
 echo "Ustvarjam XKB razporeditev $XKB_FILE ..."
 
@@ -28,7 +24,7 @@ if [[ -f "$XKB_FILE" ]]; then
 fi
 
 cat >"$XKB_FILE" <<'EOF'
-// US razporeditev + slovenski znaki na Right Ctrl (3. in 4. nivo).
+// US + slovenski znaki na Right Ctrl (3. in 4. nivo).
 // Ustvaril sumnikiOmarchy.sh
 
 default partial alphanumeric_keys
@@ -37,7 +33,7 @@ xkb_symbols "basic" {
 
     name[Group1] = "English (US, Slovenian on Right Ctrl)";
 
-    // Right Ctrl izbere 3. nivo (kot AltGr). XKB nima vgrajene opcije za to.
+    // Right Ctrl = 3. nivo (kot AltGr).
     key <RCTL> { [ ISO_Level3_Shift ], type[Group1] = "ONE_LEVEL" };
 
     // Right Ctrl + tipka / Right Ctrl + Shift + tipka
@@ -53,9 +49,6 @@ xkb_symbols "basic" {
     key <AB09> { type[Group1] = "FOUR_LEVEL", [ period, greater, leftdoublequotemark, rightdoublequotemark ] };
     key <AC11> { type[Group1] = "FOUR_LEVEL", [ apostrophe, quotedbl, leftsinglequotemark, rightsinglequotemark ] };
     key <AC10> { type[Group1] = "FOUR_LEVEL", [ semicolon, colon, ellipsis, ellipsis ] };
-
-    // Right Ctrl + P -> Print (Print Screen) za tipkovnice brez te tipke.
-    key <AD10> { type[Group1] = "FOUR_LEVEL_ALPHABETIC", [ p, P, Print, Print ] };
 };
 EOF
 
@@ -63,7 +56,7 @@ echo "Preverjam, ali se razporeditev prevede ..."
 
 if command -v xkbcli >/dev/null 2>&1; then
   if ! xkbcli compile-keymap --layout "$LAYOUT" --options omarchy:shift_caps_compose >/dev/null; then
-    echo "NAPAKA: XKB razporeditev se ne prevede, input.lua ne spreminjam." >&2
+    echo "NAPAKA: XKB razporeditev se ne prevede, nastavitev ne spreminjam." >&2
     exit 1
   fi
 else
@@ -76,7 +69,7 @@ mkdir -p "$(dirname "$INPUT_LUA")"
 touch "$INPUT_LUA"
 cp "$INPUT_LUA" "${INPUT_LUA}.backup.$(date +%Y%m%d-%H%M%S)"
 
-# Odstrani morebitni prejšnji blok, nato ga dodaj na konec.
+# Zamenjaj prejšnji blok.
 sed -i "/^${MARK_BEGIN}\$/,/^${MARK_END}\$/d" "$INPUT_LUA"
 
 cat >>"$INPUT_LUA" <<EOF
@@ -88,11 +81,26 @@ hl.config({
     kb_variant = "",
   },
 })
-
--- Right Ctrl + P -> Print Screen. Right Ctrl je ISO_Level3_Shift (MOD5),
--- zato Hyprland dobi MOD5 + Print (keysym s 3. nivoja v XKB razporeditvi).
-o.bind("MOD5 + Print", "Screenshot (Right Ctrl + P)", "omarchy-capture-screenshot")
 $MARK_END
+EOF
+
+echo "Nastavljam bližnjico ($BINDINGS_LUA) ..."
+
+mkdir -p "$(dirname "$BINDINGS_LUA")"
+touch "$BINDINGS_LUA"
+cp "$BINDINGS_LUA" "${BINDINGS_LUA}.backup.$(date +%Y%m%d-%H%M%S)"
+
+# Zamenjaj blok in počisti stare ročne ostanke.
+sed -i "/^${BIND_MARK_BEGIN}\$/,/^${BIND_MARK_END}\$/d" "$BINDINGS_LUA"
+sed -i -E '/MOD5 \+ [Pp](rint)?".*omarchy-capture-screenshot/d' "$BINDINGS_LUA"
+sed -i '/^-- .*Right Ctrl + P -> Print Screen/d' "$BINDINGS_LUA"
+sed -i '/^-- .*zato Hyprland dobi MOD5 + Print/d' "$BINDINGS_LUA"
+
+cat >>"$BINDINGS_LUA" <<EOF
+$BIND_MARK_BEGIN
+-- Right Ctrl + P: MOD5 (128) + P (Hyprland primerja osnovni znak, ne Print).
+o.bind("MOD5 + P", "Screenshot (Right Ctrl + P)", "omarchy-capture-screenshot")
+$BIND_MARK_END
 EOF
 
 if command -v hyprctl >/dev/null 2>&1 && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
@@ -126,9 +134,9 @@ echo "  Right Ctrl + Shift + '  -> ’"
 echo "  Right Ctrl + ;          -> …"
 echo "  Right Ctrl + 0          -> °"
 echo "  Right Ctrl + E          -> €"
-echo "  Right Ctrl + P          -> Print Screen (screenshot)"
+echo "  Right Ctrl + P          -> screenshot"
 echo
 echo "Shift + Caps Lock ostane Omarchyjeva Compose tipka."
 echo
-echo "Odstranitev: izbriši blok '$MARK_BEGIN' iz $INPUT_LUA"
-echo "in datoteko $XKB_FILE."
+echo "Odstranitev: izbriši blok '$MARK_BEGIN' iz $INPUT_LUA,"
+echo "blok '$BIND_MARK_BEGIN' iz $BINDINGS_LUA in datoteko $XKB_FILE."
